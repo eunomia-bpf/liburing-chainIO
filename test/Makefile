@@ -116,6 +116,7 @@ test_targets += \
 	wakeup-hang \
 	sendmsg_fs_cve \
 	rsrc_tags \
+	multi_cq \
 	# EOL
 
 all_targets += $(test_targets)
@@ -255,6 +256,7 @@ test_srcs := \
 	wakeup-hang.c \
 	sendmsg_fs_cve.c \
 	rsrc_tags.c \
+	multi_cq.c \
 	# EOL
 
 test_objs := $(patsubst %.c,%.ol,$(patsubst %.cc,%.ol,$(test_srcs)))
