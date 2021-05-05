@@ -137,6 +137,7 @@ test_targets += \
 	rsrc_tags \
 	exec-target \
 	skip-cqe \
+	multi_cq \
 	# EOL
 
 all_targets += $(test_targets)
@@ -280,6 +281,7 @@ test_srcs := \
 	rsrc_tags.c \
 	exec-target.c \
 	skip-cqe.c \
+	multi_cq.c \
 	# EOL
 
 test_objs := $(patsubst %.c,%.ol,$(patsubst %.cc,%.ol,$(test_srcs)))
