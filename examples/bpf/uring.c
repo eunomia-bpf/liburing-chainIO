@@ -25,6 +25,8 @@ int main(int arg, char **argv)
 	struct uring_bpf *obj;
 	int ret, prog_fd;
 	__u32 cq_sizes = 128;
+	unsigned long secret = 29;
+
 
 	/* 1 additional CQ, 2 in total */
 	memset(&param, 0, sizeof(param));
@@ -56,7 +58,7 @@ int main(int arg, char **argv)
 	io_uring_prep_nop(sqe);
 	sqe->off = 0;
 	sqe->opcode = IORING_OP_BPF;
-	sqe->user_data = 1;
+	sqe->user_data = (__u64)(unsigned long)&secret;
 	sqe->flags = 0;
 
 	ret = io_uring_submit(&ring);
@@ -78,11 +80,11 @@ int main(int arg, char **argv)
 
 	int map_fd = bpf_map__fd(obj->maps.arr);
 	for (int i = 0; i < 10; i++) {
-		long cnt;
+		unsigned long cnt;
 		__u32 key = i;
 
 		assert(bpf_map_lookup_elem(map_fd, &key, &cnt) == 0);
-		fprintf(stderr, "%i ", (int)cnt);
+		fprintf(stderr, "%lu ", cnt);
 	}
 
 

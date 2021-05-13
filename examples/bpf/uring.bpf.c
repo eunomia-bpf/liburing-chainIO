@@ -30,16 +30,16 @@ static long (*iouring_reap_cqe)(void *ctx, u32 cq, struct io_uring_cqe *cqe, u32
 struct bpf_map_def SEC("maps") arr = {
 	.type = BPF_MAP_TYPE_ARRAY,
 	.key_size = sizeof(u32),
-	.value_size = sizeof(long),
+	.value_size = sizeof(unsigned long),
 	.max_entries = 256,
 };
 
 #define ARR_SLOT 0
 
-static void writev(u32 kv, long v)
+static void writev(u32 kv, unsigned long v)
 {
 	u32 key = kv;
-	long *val;
+	unsigned long *val;
 
 	val = bpf_map_lookup_elem(&arr, &key);
 	if (val)
@@ -47,13 +47,15 @@ static void writev(u32 kv, long v)
 }
 
 SEC("iouring.s/")
-int test(void *ctx, void *b0, int b1, int b2, int b3)
+int test(struct io_uring_bpf_ctx *ctx)
 {
 	struct io_uring_sqe sqe;
 	struct io_uring_cqe cqe = {};
 	u32 key = 0;
 	long *val;
 	int ret, cq_idx = 1;
+	unsigned long secret;
+	u64 *uptr;
 
 	// just write some value
 	writev(ARR_SLOT, 11);
@@ -61,7 +63,7 @@ int test(void *ctx, void *b0, int b1, int b2, int b3)
 	// emit CQE to the main CQ
 	iouring_emit_cqe(ctx, 0, 3, 13, 0);
 
-	// emit 2 CQEs to a second CQ and reap it
+	// emit 2 CQEs to a second CQ and reap them
 	iouring_emit_cqe(ctx, cq_idx, 4, 17, 0);
 	iouring_emit_cqe(ctx, cq_idx, 5, 19, 0);
 	ret = iouring_reap_cqe(ctx, cq_idx, &cqe, sizeof(cqe));
@@ -75,6 +77,15 @@ int test(void *ctx, void *b0, int b1, int b2, int b3)
 	sqe.flags = 0;
 	ret = iouring_queue_sqe(ctx, &sqe, sizeof(sqe));
 	writev(ARR_SLOT + 3, ret < 0 ? ret : 21);
+
+	// write back user_data
+	writev(ARR_SLOT + 4, *((char*)ctx));
+	writev(ARR_SLOT + 5, ctx->user_data);
+
+	// demo for reading from userspace
+	uptr = (u64 *)(unsigned long)ctx->user_data;
+	bpf_copy_from_user(&secret, sizeof(secret), uptr);
+	writev(ARR_SLOT + 6, secret);
 
 	return 0;
 }
