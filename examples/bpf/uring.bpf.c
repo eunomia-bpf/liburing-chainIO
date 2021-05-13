@@ -26,6 +26,8 @@ static inline void io_uring_prep_nop(struct io_uring_sqe *sqe)
 static long (*iouring_queue_sqe)(void *ctx, struct io_uring_sqe *sqe, u32) = (void *) 164;
 static long (*iouring_emit_cqe)(void *ctx, u32 cq, u64 data, u32 res, u32 flags) = (void *) 165;
 static long (*iouring_reap_cqe)(void *ctx, u32 cq, struct io_uring_cqe *cqe, u32) = (void *) 166;
+static long (*bpf_copy_to_user)(void *user_ptr, const void *src, __u32 size) = (void *) 167;
+
 
 struct bpf_map_def SEC("maps") arr = {
 	.type = BPF_MAP_TYPE_ARRAY,
@@ -86,6 +88,10 @@ int test(struct io_uring_bpf_ctx *ctx)
 	uptr = (u64 *)(unsigned long)ctx->user_data;
 	bpf_copy_from_user(&secret, sizeof(secret), uptr);
 	writev(ARR_SLOT + 6, secret);
+
+	// copy to userspace
+	secret = 31;
+	bpf_copy_to_user(uptr, &secret, sizeof(secret));
 
 	return 0;
 }

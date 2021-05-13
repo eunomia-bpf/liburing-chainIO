@@ -86,6 +86,7 @@ int main(int arg, char **argv)
 		assert(bpf_map_lookup_elem(map_fd, &key, &cnt) == 0);
 		fprintf(stderr, "%lu ", cnt);
 	}
+	fprintf(stderr, "\nnew secret %lu\n", secret);
 
 
 	uring_bpf__destroy(obj);
