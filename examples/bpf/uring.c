@@ -16,9 +16,7 @@
 
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 
-
-
-int main(int arg, char **argv)
+static int test1(void)
 {
 	struct io_uring_params param;
 	struct io_uring ring;
@@ -90,5 +88,13 @@ int main(int arg, char **argv)
 	fprintf(stderr, "\nnew secret %lu\n", secret);
 
 	uring_bpf__destroy(obj);
+	io_uring_queue_exit(&ring);
+	return 0;
+}
+
+
+int main(int arg, char **argv)
+{
+	test1();
 	return 0;
 }
