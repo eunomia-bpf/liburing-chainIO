@@ -37,15 +37,21 @@ struct bpf_map_def SEC("maps") arr = {
 };
 
 #define ARR_SLOT 0
+#define REENTER_SLOT 10
 
 static void writev(u32 kv, unsigned long v)
 {
-	u32 key = kv;
-	unsigned long *val;
+	unsigned long *val = bpf_map_lookup_elem(&arr, &kv);
 
-	val = bpf_map_lookup_elem(&arr, &key);
 	if (val)
 		*val = v;
+}
+
+static unsigned long readv(u32 kv)
+{
+	unsigned long *val = bpf_map_lookup_elem(&arr, &kv);
+
+	return val ? *val : -1UL;
 }
 
 SEC("iouring.s/")
@@ -56,8 +62,14 @@ int test(struct io_uring_bpf_ctx *ctx)
 	u32 key = 0;
 	long *val;
 	int ret, cq_idx = 1;
-	unsigned long secret;
+	unsigned long secret, f1;
+	__u32 vvv;
 	u64 *uptr;
+
+	/* make sure we don't repeat it twice */
+	if (readv(REENTER_SLOT))
+		return 0;
+	writev(REENTER_SLOT, 1);
 
 	// just write some value
 	writev(ARR_SLOT, 11);
@@ -81,18 +93,19 @@ int test(struct io_uring_bpf_ctx *ctx)
 	writev(ARR_SLOT + 3, ret < 0 ? ret : 21);
 
 	// write back user_data
-	writev(ARR_SLOT + 4, *((char*)ctx));
-	writev(ARR_SLOT + 5, ctx->user_data);
+	writev(ARR_SLOT + 4, ctx->user_data);
 
 	// demo for reading from userspace
 	uptr = (u64 *)(unsigned long)ctx->user_data;
 	bpf_copy_from_user(&secret, sizeof(secret), uptr);
-	writev(ARR_SLOT + 6, secret);
+	writev(ARR_SLOT + 5, secret);
 
 	// copy to userspace
 	secret = 31;
 	bpf_copy_to_user(uptr, &secret, sizeof(secret));
 
+	ctx->wait_idx = 0;
+	ctx->wait_nr = 1;
 	return 0;
 }
 
