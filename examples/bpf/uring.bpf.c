@@ -93,7 +93,7 @@ struct bpf_ctx {
 SEC("iouring")
 int counting(struct io_uring_bpf_ctx *ctx)
 {
-	struct __kernel_timespec *ts = (void *)(unsigned long)ctx->user_data;
+	struct counting_ctx *uctx = (void *)(unsigned long)ctx->user_data;
 	struct io_uring_sqe sqe;
 	struct io_uring_cqe cqe;
 	unsigned long v = readv(0);
@@ -108,7 +108,7 @@ int counting(struct io_uring_bpf_ctx *ctx)
 		writev(1, ret ? ret : cqe.user_data);
 	}
 
-	io_uring_prep_timeout(&sqe, ts, 0, 0);
+	io_uring_prep_timeout(&sqe, &uctx->ts, 0, 0);
 	sqe.user_data = 5;
 	sqe.cq_idx = cq_idx;
 	bpf_io_uring_submit(ctx, &sqe, sizeof(sqe));
@@ -116,6 +116,36 @@ int counting(struct io_uring_bpf_ctx *ctx)
 	ctx->wait_idx = cq_idx;
 	ctx->wait_nr = 1;
 	return IORING_BPF_WAIT;
+}
+
+SEC("iouring")
+int pingpong(struct io_uring_bpf_ctx *ctx)
+{
+	struct ping_ctx *uctx = (void *)(unsigned long)ctx->user_data;
+	struct io_uring_sqe sqe;
+	struct io_uring_cqe cqe;
+	unsigned long v;
+	int idx, ret, iter;
+	int cq_idx2;
+
+	bpf_copy_from_user(&idx, sizeof(idx), &uctx->idx);
+	if (!readv(idx)) {
+		writev(idx, 1);
+wait:
+		ctx->wait_idx = idx + 1;
+		ctx->wait_nr = 1;
+		return IORING_BPF_WAIT;
+	}
+
+	ret = bpf_io_uring_reap_cqe(ctx, idx + 1, &cqe, sizeof(cqe));
+	iter = cqe.user_data;
+	cq_idx2 = (idx ^ 1) + 1;
+	bpf_io_uring_emit_cqe(ctx, cq_idx2, iter + 1, 0, 0);
+
+	if (iter < 20)
+		goto wait;
+	writev(5 + idx, iter);
+	return IORING_BPF_OK;
 }
 
 char LICENSE[] SEC("license") = "GPL";
