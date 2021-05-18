@@ -86,4 +86,36 @@ int test(struct io_uring_bpf_ctx *ctx)
 	return 0;
 }
 
+struct bpf_ctx {
+	struct __kernel_timespec ts;
+};
+
+SEC("iouring")
+int counting(struct io_uring_bpf_ctx *ctx)
+{
+	struct __kernel_timespec *ts = (void *)(unsigned long)ctx->user_data;
+	struct io_uring_sqe sqe;
+	struct io_uring_cqe cqe;
+	unsigned long v = readv(0);
+	unsigned int cq_idx = 1;
+
+	if (v > 10)
+		return 0;
+	writev(0, v + 1);
+
+	if (v != 0) {
+		int ret = bpf_io_uring_reap_cqe(ctx, cq_idx, &cqe, sizeof(cqe));
+		writev(1, ret ? ret : cqe.user_data);
+	}
+
+	io_uring_prep_timeout(&sqe, ts, 0, 0);
+	sqe.user_data = 5;
+	sqe.cq_idx = cq_idx;
+	bpf_io_uring_submit(ctx, &sqe, sizeof(sqe));
+
+	ctx->wait_idx = cq_idx;
+	ctx->wait_nr = 1;
+	return 0;
+}
+
 char LICENSE[] SEC("license") = "GPL";
