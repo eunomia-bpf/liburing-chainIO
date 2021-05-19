@@ -177,4 +177,46 @@ wait:
 	return 0;
 }
 
+static inline void io_uring_prep_write(struct io_uring_sqe *sqe, int fd,
+				       const void *buf, unsigned nbytes, off_t offset)
+{
+	io_uring_prep_rw(IORING_OP_WRITE, sqe, fd, buf, nbytes, offset);
+}
+
+#define IOSQE_FIXED_FILE	(1U << IOSQE_FIXED_FILE_BIT)
+
+SEC("iouring.s/")
+int write_file(struct io_uring_bpf_ctx *ctx)
+{
+	const int off_idx = 1, infl_idx = 0;
+	struct io_uring_sqe sqe;
+	struct io_uring_cqe cqe;
+	void *buf = (void *)(unsigned long)ctx->user_data;
+	u64 ret, i, inflight = readv(infl_idx);
+	u64 cur_off = readv(off_idx);
+
+	for (i = 0; i < FILL_QD; i++) {
+		if (inflight) {
+			ret = iouring_reap_cqe(ctx, 1, &cqe, sizeof(cqe));
+			inflight--;
+		}
+	}
+	for (i = 0; i < FILL_QD; i++) {
+		if (inflight >= FILL_QD || cur_off >= FILL_FSIZE)
+			break;
+		io_uring_prep_write(&sqe, 0, buf, 1, cur_off);
+		sqe.flags = IOSQE_FIXED_FILE;
+		sqe.cq_idx = 1;
+		ret = iouring_queue_sqe(ctx, &sqe, sizeof(sqe));
+		inflight++;
+		cur_off++;
+	}
+
+	writev(off_idx, cur_off);
+	writev(infl_idx, inflight);
+	ctx->wait_idx = 1;
+	ctx->wait_nr = inflight;
+	return 0;
+}
+
 char LICENSE[] SEC("license") = "GPL";
