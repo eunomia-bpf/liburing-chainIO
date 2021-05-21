@@ -202,9 +202,10 @@ int write_file(struct io_uring_bpf_ctx *ctx)
 		}
 	}
 	for (i = 0; i < FILL_QD; i++) {
-		if (inflight >= FILL_QD || cur_off >= FILL_FSIZE)
+		if (inflight >= FILL_QD || cur_off >= FILL_BLOCKS)
 			break;
-		io_uring_prep_write(&sqe, 0, buf, 1, cur_off);
+		io_uring_prep_write(&sqe, 0, buf, FILL_BLOCK_SIZE,
+				    cur_off * FILL_BLOCK_SIZE);
 		sqe.flags = IOSQE_FIXED_FILE;
 		sqe.cq_idx = 1;
 		ret = iouring_queue_sqe(ctx, &sqe, sizeof(sqe));

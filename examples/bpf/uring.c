@@ -187,20 +187,22 @@ static int test3(void)
 	return 0;
 }
 
+static char verify_buf[FILL_BLOCK_SIZE];
+
 static int test4(void)
 {
 	struct io_uring ring;
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
 	struct uring_bpf *obj;
-	int i, ret, fd;
+	int i, j, ret, fd;
 	char filename[] = "./.tmp/bpf_file_XXXXXX";
-	char buf[4096], pattern = 0xae;
+	char pattern = 0xae;
 	void *mem;
 
-	ret = posix_memalign(&mem, 4096, 4096);
+	ret = posix_memalign(&mem, 4096, FILL_FSIZE);
 	assert(!ret);
-	memset(mem, pattern, 4096);
+	memset(mem, pattern, FILL_FSIZE);
 
 	fd = mkstemp(filename);
 	if (fd < 0) {
@@ -229,10 +231,13 @@ static int test4(void)
 	io_uring_queue_exit(&ring);
 	free(mem);
 
-	ret = read(fd, buf, 4096);
-	assert(ret == FILL_FSIZE);
-	for (i = 0; i < ret; i++)
-		assert(buf[i] == pattern);
+	for (i = 0; i < FILL_BLOCKS; i++) {
+		ret = read(fd, verify_buf, FILL_BLOCK_SIZE);
+		assert(ret == FILL_BLOCK_SIZE);
+		for (j = 0; j < FILL_BLOCK_SIZE; j++)
+			assert(verify_buf[i] == pattern);
+	}
+
 	return 0;
 }
 
