@@ -117,6 +117,7 @@ test_targets += \
 	sendmsg_fs_cve \
 	rsrc_tags \
 	multi_cq \
+	futex
 	# EOL
 
 all_targets += $(test_targets)
@@ -257,6 +258,7 @@ test_srcs := \
 	sendmsg_fs_cve.c \
 	rsrc_tags.c \
 	multi_cq.c \
+	futex.c
 	# EOL
 
 test_objs := $(patsubst %.c,%.ol,$(patsubst %.cc,%.ol,$(test_srcs)))
@@ -277,6 +279,7 @@ timeout-new: XCFLAGS = -lpthread
 thread-exit: XCFLAGS = -lpthread
 ring-leak2: XCFLAGS = -lpthread
 poll-mshot-update: XCFLAGS = -lpthread
+futex: XCFLAGS = -lpthread
 
 install: $(test_targets) runtests.sh runtests-loop.sh
 	$(INSTALL) -D -d -m 755 $(datadir)/liburing-test/
