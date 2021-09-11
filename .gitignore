@@ -130,6 +130,7 @@
 /test/testfile
 /test/submit-link-fail
 /test/exec-target
+/test/skip-cqe
 /test/*.dmesg
 
 config-host.h
