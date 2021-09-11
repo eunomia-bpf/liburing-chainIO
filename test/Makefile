@@ -136,6 +136,7 @@ test_targets += \
 	sendmsg_fs_cve \
 	rsrc_tags \
 	exec-target \
+	skip-cqe \
 	# EOL
 
 all_targets += $(test_targets)
@@ -278,6 +279,7 @@ test_srcs := \
 	sendmsg_fs_cve.c \
 	rsrc_tags.c \
 	exec-target.c \
+	skip-cqe.c \
 	# EOL
 
 test_objs := $(patsubst %.c,%.ol,$(patsubst %.cc,%.ol,$(test_srcs)))
