@@ -17,28 +17,53 @@ static int test_single_nop(struct io_uring *ring)
 	struct io_uring_cqe *cqe;
 	struct io_uring_sqe *sqe;
 	int ret;
+	unsigned vals[2] = {4, 4};
+	int fds[2];
+	char buffer[100];
 
-	sqe = io_uring_get_sqe(ring);
-	if (!sqe) {
-		fprintf(stderr, "get sqe failed\n");
+	if (pipe(fds)) {
+		perror("pipe");
+		return 1;
+	}
+	int nr = 16;
+	for (int i = 0; i < nr; i++) {
+		sqe = io_uring_get_sqe(ring);
+		io_uring_prep_read(sqe, fds[0], buffer, 10, 0);
+		sqe->flags |= IOSQE_ASYNC;
+		sqe->user_data = i;
+	}
+	ret = io_uring_submit(ring);
+	if (ret != nr) {
+		fprintf(stderr, "sqe submit failed: %d\n", ret);
 		goto err;
 	}
+	ret = io_uring_register_iowq_max_workers(ring, vals);
+	if (ret) {
+		fprintf(stderr, "max work %i\n", ret);
+		goto err;
+	}
+	fprintf(stderr, "%i %i\n", vals[0], vals[1]);
 
-	io_uring_prep_nop(sqe);
-
+	nr = 100;
+	for (int i = 0; i < nr; i++) {
+		sqe = io_uring_get_sqe(ring);
+		io_uring_prep_read(sqe, fds[0], buffer, 10, 0);
+		sqe->flags |= IOSQE_ASYNC;
+		sqe->user_data = i;
+	}
 	ret = io_uring_submit(ring);
-	if (ret <= 0) {
+	if (ret != nr) {
 		fprintf(stderr, "sqe submit failed: %d\n", ret);
 		goto err;
 	}
 
-	ret = io_uring_wait_cqe(ring, &cqe);
+
+
+	ret = io_uring_wait_cqe_nr(ring, &cqe, nr);
 	if (ret < 0) {
 		fprintf(stderr, "wait completion %d\n", ret);
 		goto err;
 	}
-
-	io_uring_cqe_seen(ring, cqe);
 	return 0;
 err:
 	return 1;
@@ -93,7 +118,7 @@ int main(int argc, char *argv[])
 	if (argc > 1)
 		return 0;
 
-	ret = io_uring_queue_init(8, &ring, 0);
+	ret = io_uring_queue_init(128, &ring, 0);
 	if (ret) {
 		fprintf(stderr, "ring setup failed: %d\n", ret);
 		return 1;
@@ -105,11 +130,11 @@ int main(int argc, char *argv[])
 		return ret;
 	}
 
-	ret = test_barrier_nop(&ring);
-	if (ret) {
-		fprintf(stderr, "test_barrier_nop failed\n");
-		return ret;
-	}
+	// ret = test_barrier_nop(&ring);
+	// if (ret) {
+	// 	fprintf(stderr, "test_barrier_nop failed\n");
+	// 	return ret;
+	// }
 
 	return 0;
 }
