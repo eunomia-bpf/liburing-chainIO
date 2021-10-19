@@ -6,6 +6,7 @@
 #include "liburing.h"
 #include "liburing/compat.h"
 #include "liburing/io_uring.h"
+#include <stdio.h>
 
 /*
  * Returns true if we're not using SQ thread (thus nobody submits but us)
@@ -80,7 +81,17 @@ static int _io_uring_get_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_pt
 			     struct get_data *data)
 {
 	struct io_uring_cqe *cqe = NULL;
+	int reenter = 0;
 	int err;
+
+	if (data->get_flags & IORING_ENTER_EXT_ARG) {
+		struct io_uring_getevents_arg *arg = data->arg;
+		sigset_t *sigmask = (sigset_t *)arg->sigmask;
+
+		if (sigmask)
+			fprintf(stderr, "sigmask set\n");
+	}
+
 
 	do {
 		bool need_enter = false;
@@ -108,9 +119,16 @@ static int _io_uring_get_cqe(struct io_uring *ring, struct io_uring_cqe **cqe_pt
 		if (!need_enter)
 			break;
 
+		if (reenter && (data->get_flags & IORING_ENTER_EXT_ARG)) {
+			struct io_uring_getevents_arg *arg = data->arg;
+
+			if (arg->ts)
+				fprintf(stderr, "reenter ts %i\n", reenter);
+		}
 		ret = ____sys_io_uring_enter2(ring->ring_fd, data->submit,
 					      data->wait_nr, flags, data->arg,
 					      data->sz);
+		reenter++;
 		if (ret < 0) {
 			err = ret;
 			break;
@@ -368,8 +386,12 @@ static int __io_uring_submit(struct io_uring *ring, unsigned submitted,
 
 		ret = ____sys_io_uring_enter(ring->ring_fd, submitted, wait_nr,
 					     flags, NULL);
-	} else
+	} else {
+		if (submitted == 0) {
+			fprintf(stderr, "zero submit!\n");
+		}
 		ret = submitted;
+	}
 
 	return ret;
 }
