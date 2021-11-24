@@ -89,7 +89,7 @@ static socklen_t cfg_alen;
 static struct sockaddr_storage cfg_dst_addr;
 static struct sockaddr_storage cfg_src_addr;
 
-static char payload[IP_MAXPACKET];
+static char payload[IP_MAXPACKET] __attribute__((aligned(4096)));
 static long packets, bytes, completions, expected_completions;
 static int  zerocopied = -1;
 static uint32_t next_completion;

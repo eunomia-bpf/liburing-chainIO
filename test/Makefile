@@ -149,6 +149,7 @@ test_srcs := \
 	wakeup-hang.c \
 	skip-cqe.c \
 	msg_zerocopy.c \
+	send-zc.c \
 	# EOL
 
 
