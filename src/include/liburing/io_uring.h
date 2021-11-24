@@ -63,6 +63,7 @@ struct io_uring_sqe {
 	union {
 		__s32	splice_fd_in;
 		__u32	file_index;
+		__u32	tx_ctx_idx;
 	};
 	__u64	__pad2[2];
 };
@@ -147,6 +148,7 @@ enum {
 	IORING_OP_MKDIRAT,
 	IORING_OP_SYMLINKAT,
 	IORING_OP_LINKAT,
+	IORING_OP_SENDZC,
 
 	/* this goes last, obviously */
 	IORING_OP_LAST,
@@ -173,6 +175,11 @@ enum {
  * extends splice(2) flags
  */
 #define SPLICE_F_FD_IN_FIXED	(1U << 31) /* the last bit of __u32 */
+
+enum {
+	IORING_SENDZC_FLUSH		= (1U << 0),
+	IORING_SENDZC_FIXED_BUF		= (1U << 1),
+};
 
 /*
  * POLL_ADD flags. Note that since sqe->poll_events is the flag space, the
@@ -329,6 +336,9 @@ enum {
 	/* set/get max number of io-wq workers */
 	IORING_REGISTER_IOWQ_MAX_WORKERS	= 19,
 
+	IORING_REGISTER_TX_CTX			= 20,
+	IORING_UNREGISTER_TX_CTX		= 21,
+
 	/* this goes last */
 	IORING_REGISTER_LAST
 };
@@ -337,6 +347,10 @@ enum {
 enum {
 	IO_WQ_BOUND,
 	IO_WQ_UNBOUND,
+};
+
+struct io_uring_tx_ctx_register {
+	__u64 tag;
 };
 
 /* deprecated, see struct io_uring_rsrc_update */
