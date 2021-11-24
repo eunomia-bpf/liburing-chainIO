@@ -153,6 +153,7 @@ test_srcs := \
 	skip-cqe.c \
 	send-zcopy.c \
 	msg_zerocopy.c \
+	send-zc.c \
 	# EOL
 
 
