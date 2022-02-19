@@ -63,6 +63,10 @@ struct io_uring_sqe {
 	union {
 		__s32	splice_fd_in;
 		__u32	file_index;
+		struct {
+			__u16	notification_idx;
+			__u16	addr_len;
+		} __attribute__((packed));
 	};
 	__u64	__pad2[2];
 };
@@ -127,7 +131,8 @@ enum {
 	IORING_OP_FALLOCATE,
 	IORING_OP_OPENAT,
 	IORING_OP_CLOSE,
-	IORING_OP_FILES_UPDATE,
+	IORING_OP_RSRC_UPDATE,
+	IORING_OP_FILES_UPDATE = IORING_OP_RSRC_UPDATE,
 	IORING_OP_STATX,
 	IORING_OP_READ,
 	IORING_OP_WRITE,
@@ -147,6 +152,7 @@ enum {
 	IORING_OP_MKDIRAT,
 	IORING_OP_SYMLINKAT,
 	IORING_OP_LINKAT,
+	IORING_OP_SENDZC,
 
 	/* this goes last, obviously */
 	IORING_OP_LAST,
@@ -173,6 +179,12 @@ enum {
  * extends splice(2) flags
  */
 #define SPLICE_F_FD_IN_FIXED	(1U << 31) /* the last bit of __u32 */
+
+enum {
+	IORING_SENDZC_FLUSH		= (1U << 0),
+	IORING_SENDZC_FIXED_BUF		= (1U << 1),
+	IORING_SENDZC_OVERRIDE_TAG	= (1U << 2),
+};
 
 /*
  * POLL_ADD flags. Note that since sqe->poll_events is the flag space, the
@@ -329,6 +341,9 @@ enum {
 	/* set/get max number of io-wq workers */
 	IORING_REGISTER_IOWQ_MAX_WORKERS	= 19,
 
+	IORING_REGISTER_NOTIFIERS		= 20,
+	IORING_UNREGISTER_NOTIFIERS		= 21,
+
 	/* this goes last */
 	IORING_REGISTER_LAST
 };
@@ -367,6 +382,18 @@ struct io_uring_rsrc_update2 {
 	__aligned_u64 tags;
 	__u32 nr;
 	__u32 resv2;
+};
+
+struct io_uring_notification_slot {
+	__u64 tag;
+};
+
+struct io_uring_notification_register {
+	__u32 nr_slots;
+	__u32 resv;
+	__u64 resv2;
+	__u64 data;
+	__u64 resv3;
 };
 
 /* Skip updating fd indexes set to this value in the fd table */
