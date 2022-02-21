@@ -257,3 +257,23 @@ int io_uring_register_iowq_max_workers(struct io_uring *ring, unsigned int *val)
 					 IORING_REGISTER_IOWQ_MAX_WORKERS, val,
 					 2);
 }
+
+int io_uring_register_notifications(struct io_uring *ring, unsigned nr,
+				    struct io_uring_notification_slot *slots)
+{
+	struct io_uring_notification_register r = {
+		.nr_slots = nr,
+		.data = (unsigned long)slots,
+	};
+
+	return ____sys_io_uring_register(ring->ring_fd,
+					 IORING_REGISTER_NOTIFIERS,
+					 &r, sizeof(r));
+}
+
+int io_uring_unregister_notifications(struct io_uring *ring)
+{
+	return ____sys_io_uring_register(ring->ring_fd,
+					 IORING_UNREGISTER_NOTIFIERS,
+					 NULL, 0);
+}
