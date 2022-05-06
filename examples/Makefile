@@ -13,7 +13,8 @@ endif
 example_srcs := \
 	io_uring-cp.c \
 	io_uring-test.c \
-	link-cp.c
+	link-cp.c \
+	io_uring-sendzc.c \
 
 all_targets :=
 
