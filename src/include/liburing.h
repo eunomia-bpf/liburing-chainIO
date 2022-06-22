@@ -184,6 +184,9 @@ int io_uring_register_buf_ring(struct io_uring *ring,
 			       struct io_uring_buf_reg *reg, unsigned int flags);
 int io_uring_unregister_buf_ring(struct io_uring *ring, int bgid);
 
+int io_uring_register_file_alloc_range(struct io_uring *ring,
+					unsigned off, unsigned len);
+
 /*
  * Helper for the peek/wait single cqe functions. Exported because of that,
  * but probably shouldn't be used directly in an application.
