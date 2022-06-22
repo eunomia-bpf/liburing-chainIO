@@ -830,6 +830,97 @@ static int test_partial_register_fail(void)
 	return 0;
 }
 
+static int file_update_alloc(struct io_uring *ring, int *fd)
+{
+	struct io_uring_sqe *sqe;
+	struct io_uring_cqe *cqe;
+	int ret;
+
+	sqe = io_uring_get_sqe(ring);
+	io_uring_prep_files_update(sqe, fd, 1, IORING_FILE_INDEX_ALLOC);
+
+	ret = io_uring_submit(ring);
+	if (ret != 1) {
+		fprintf(stderr, "%s: got %d, wanted 1\n", __FUNCTION__, ret);
+		return -1;
+	}
+
+	ret = io_uring_wait_cqe(ring, &cqe);
+	if (ret < 0) {
+		fprintf(stderr, "%s: io_uring_wait_cqe=%d\n", __FUNCTION__, ret);
+		return -1;
+	}
+	ret = cqe->res;
+	io_uring_cqe_seen(ring, cqe);
+	return ret;
+}
+
+static int test_file_alloc_ranges(void)
+{
+	struct io_uring ring;
+	int pipe_fds[2];
+	int ret, i, fd;
+	int roff = 7, rlen = 2;
+
+	if (pipe(pipe_fds)) {
+		fprintf(stderr, "pipes\n");
+		return 1;
+	}
+	ret = io_uring_queue_init(8, &ring, 0);
+	if (ret) {
+		fprintf(stderr, "queue_init: %d\n", ret);
+		return 1;
+	}
+
+	ret = io_uring_register_files_sparse(&ring, 10);
+	if (ret == -EINVAL) {
+not_supported:
+		close(pipe_fds[0]);
+		close(pipe_fds[1]);
+		io_uring_queue_exit(&ring);
+		printf("file alloc ranges are not supported, skip\n");
+		return 0;
+	} else if (ret) {
+		fprintf(stderr, "io_uring_register_files_sparse %i\n", ret);
+		return ret;
+	}
+
+	ret = io_uring_register_file_alloc_range(&ring, roff, rlen);
+	if (ret) {
+		if (ret == -EINVAL)
+			goto not_supported;
+		fprintf(stderr, "io_uring_register_file_alloc_range %i\n", ret);
+		return 1;
+	}
+
+	for (i = 0; i < rlen; i++) {
+		fd = pipe_fds[0];
+		ret = file_update_alloc(&ring, &fd);
+		if (ret != 1) {
+			fprintf(stderr, "file_update_alloc\n");
+			return 1;
+		}
+
+		fprintf(stderr, "idx1 %i\n", fd);
+		if (fd < roff || fd >= roff + rlen) {
+			fprintf(stderr, "invalid off result %i\n", fd);
+			return 1;
+		}
+	}
+
+	fd = pipe_fds[0];
+	ret = file_update_alloc(&ring, &fd);
+	if (ret != -ENFILE) {
+		fprintf(stderr, "overallocated %i, off %i\n", ret, fd);
+		return 1;
+	}
+
+	close(pipe_fds[0]);
+	close(pipe_fds[1]);
+	io_uring_queue_exit(&ring);
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	struct io_uring ring;
@@ -944,6 +1035,12 @@ int main(int argc, char *argv[])
 	}
 
 	ret = test_partial_register_fail();
+	if (ret) {
+		printf("test_partial_register_fail failed\n");
+		return ret;
+	}
+
+	ret = test_file_alloc_ranges();
 	if (ret) {
 		printf("test_partial_register_fail failed\n");
 		return ret;
