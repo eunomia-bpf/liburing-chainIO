@@ -15,6 +15,7 @@ example_srcs := \
 	io_uring-test.c \
 	link-cp.c \
 	io_uring-sendzc.c \
+	io_uring-sendzc2.c \
 
 all_targets :=
 
