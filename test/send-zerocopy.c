@@ -278,11 +278,16 @@ static int create_socketpair_ip(struct sockaddr_storage *addr,
 		}
 	}
 	if (msg_zc) {
+#ifdef SO_ZEROCOPY
 		val = 1;
 		if (setsockopt(*sock_client, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof(val))) {
 			perror("setsockopt zc");
 			return 1;
 		}
+#else
+		fprintf(stderr, "no SO_ZEROCOPY\n");
+		return 1;
+#endif
 	}
 	if (tcp) {
 		*sock_server = accept(listen_sock, NULL, NULL);
@@ -502,7 +507,10 @@ static int test_inet_send(struct io_uring *ring)
 			continue;
 		if (swap_sockets && !tcp)
 			continue;
-
+#ifndef SO_ZEROCOPY
+		if (msg_zc_set)
+			continue;
+#endif
 		ret = create_socketpair_ip(&addr, &sock_client, &sock_server, ipv6,
 				 client_connect, msg_zc_set, tcp);
 		if (ret) {
