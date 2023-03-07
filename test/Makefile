@@ -191,6 +191,7 @@ test_srcs := \
 	version.c \
 	wakeup-hang.c \
 	xattr.c \
+	splice-direct.c \
 	# EOL
 
 all_targets :=
