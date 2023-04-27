@@ -21,7 +21,8 @@ example_srcs := \
 	link-cp.c \
 	poll-bench.c \
 	send-zerocopy.c \
-	rsrc-update-bench.c
+	rsrc-update-bench.c \
+	splice-bench.c
 
 all_targets :=
 
