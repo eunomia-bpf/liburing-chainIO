@@ -437,6 +437,7 @@ struct send_conf {
 	bool iovec;
 	bool long_iovec;
 	bool poll_first;
+	bool combined;
 	int buf_index;
 	struct sockaddr_storage *addr;
 };
@@ -446,7 +447,7 @@ static int do_test_inet_send(struct io_uring *ring, int sock_client, int sock_se
 {
 	struct iovec iov[MAX_IOV];
 	struct msghdr msghdr[CORK_REQS];
-	const unsigned zc_flags = 0;
+	const unsigned zc_flags = conf->combined ? IORING_SEND_ZC_COMBINED_CQE : 0;
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
 	int nr_reqs = conf->cork ? CORK_REQS : 1;
@@ -586,12 +587,16 @@ static int do_test_inet_send(struct io_uring *ring, int sock_client, int sock_se
 					cqe->flags, cqe->res);
 			return 1;
 		}
+		if (conf->combined & (cqe->flags & IORING_CQE_F_MORE)) {
+			fprintf(stderr, "combined with F_MORE\n");
+			return 1;
+		}
 		if (cqe->user_data >= nr_reqs) {
 			fprintf(stderr, "invalid user_data %lu\n",
 					(unsigned long)cqe->user_data);
 			return 1;
 		}
-		if (!(cqe->flags & IORING_CQE_F_NOTIF)) {
+		if (!(cqe->flags & IORING_CQE_F_NOTIF) || conf->combined) {
 			if (cqe->flags & IORING_CQE_F_MORE)
 				nr_cqes++;
 			if (cqe->user_data == nr_reqs - 1)
@@ -651,7 +656,7 @@ static int test_inet_send(struct io_uring *ring)
 			sock_server = tmp_sock;
 		}
 
-		for (i = 0; i < 1024; i++) {
+		for (i = 0; i < 2048; i++) {
 			bool regbuf;
 
 			conf.use_sendmsg = i & 1;
@@ -666,6 +671,10 @@ static int test_inet_send(struct io_uring *ring)
 			conf.long_iovec = i & 512;
 			conf.tcp = tcp;
 			regbuf = conf.mix_register || conf.fixed_buf;
+			conf.combined = i & 1024;
+
+			if (conf.combined && !support_combined)
+				continue;
 
 			if (conf.iovec && (!conf.use_sendmsg || regbuf || conf.cork))
 				continue;
