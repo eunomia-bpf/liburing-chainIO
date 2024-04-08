@@ -71,6 +71,43 @@ static struct iovec buffers_iov[__BUF_NR];
 
 static bool has_sendzc;
 static bool has_sendmsg;
+static bool support_combined;
+
+static int create_socketpair_ip(struct sockaddr_storage *addr,
+				int *sock_client, int *sock_server,
+				bool ipv6, bool client_connect,
+				bool msg_zc, bool tcp);
+
+#define IORING_SEND_ZC_COMBINED_CQE	(1U << 4)
+
+static int probe_combined_cqe(struct io_uring *ring)
+{
+	struct io_uring_sqe *sqe;
+	struct io_uring_cqe *cqe;
+	struct sockaddr_storage addr;
+	int ret, sp[2];
+
+	ret = create_socketpair_ip(&addr, &sp[0], &sp[1], true, true, false, true);
+	if (ret) {
+		fprintf(stderr, "sock prep failed %d\n", ret);
+		return -1;
+	}
+
+	sqe = io_uring_get_sqe(ring);
+	io_uring_prep_send_zc(sqe, sp[0], tx_buffer, 1, 0, IORING_SEND_ZC_COMBINED_CQE);
+
+	ret = io_uring_submit(ring);
+	assert(ret == 1);
+	ret = io_uring_wait_cqe(ring, &cqe);
+	assert(!ret);
+
+	if (cqe->res != -EINVAL)
+		support_combined = true;
+	io_uring_cqe_seen(ring, cqe);
+	close(sp[0]);
+	close(sp[1]);
+	return 0;
+}
 
 static int probe_zc_support(void)
 {
@@ -94,6 +131,15 @@ static int probe_zc_support(void)
 
 	has_sendzc = p->ops_len > IORING_OP_SEND_ZC;
 	has_sendmsg = p->ops_len > IORING_OP_SENDMSG_ZC;
+
+	if (has_sendzc) {
+		ret = probe_combined_cqe(&ring);
+		if (ret) {
+			fprintf(stderr, "probe_combined_cqe failed\n");
+			return -1;
+		}
+	}
+
 	io_uring_queue_exit(&ring);
 	free(p);
 	return 0;
@@ -108,12 +154,13 @@ static bool check_cq_empty(struct io_uring *ring)
 	return ret == -EAGAIN;
 }
 
-static int test_basic_send(struct io_uring *ring, int sock_tx, int sock_rx)
+static int test_basic_send(struct io_uring *ring, int sock_tx, int sock_rx,
+			   bool combined)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
 	int msg_flags = 0;
-	unsigned zc_flags = 0;
+	unsigned zc_flags = combined ? IORING_SEND_ZC_COMBINED_CQE : 0;
 	int payload_size = 100;
 	int ret;
 
@@ -132,14 +179,22 @@ static int test_basic_send(struct io_uring *ring, int sock_tx, int sock_rx)
 		return T_EXIT_FAIL;
 	}
 
-	assert(cqe->flags & IORING_CQE_F_MORE);
-	io_uring_cqe_seen(ring, cqe);
+	if (!combined) {
+		assert(cqe->flags & IORING_CQE_F_MORE);
+		io_uring_cqe_seen(ring, cqe);
 
-	ret = io_uring_wait_cqe(ring, &cqe);
-	assert(!ret);
-	assert(cqe->user_data == 1);
-	assert(cqe->flags & IORING_CQE_F_NOTIF);
-	assert(!(cqe->flags & IORING_CQE_F_MORE));
+		ret = io_uring_wait_cqe(ring, &cqe);
+		assert(!ret);
+		assert(cqe->user_data == 1);
+		assert(cqe->flags & IORING_CQE_F_NOTIF);
+		assert(!(cqe->flags & IORING_CQE_F_MORE));
+	} else {
+		if (cqe->flags & IORING_CQE_F_MORE) {
+			fprintf(stderr, "combined with IORING_CQE_F_MORE\n");
+			return -1;
+		}
+	}
+
 	io_uring_cqe_seen(ring, cqe);
 	assert(check_cq_empty(ring));
 
@@ -148,7 +203,8 @@ static int test_basic_send(struct io_uring *ring, int sock_tx, int sock_rx)
 	return T_EXIT_PASS;
 }
 
-static int test_send_faults_check(struct io_uring *ring, int expected)
+static int test_send_faults_check(struct io_uring *ring, int expected,
+				  bool combined)
 {
 	struct io_uring_cqe *cqe;
 	int ret, nr_cqes = 0;
@@ -160,12 +216,13 @@ static int test_send_faults_check(struct io_uring *ring, int expected)
 		assert(!ret);
 		assert(cqe->user_data == 1);
 
-		if (nr_cqes == 1 && (cqe->flags & IORING_CQE_F_NOTIF)) {
+		if (nr_cqes == 1 && !combined &&
+		    (cqe->flags & IORING_CQE_F_NOTIF)) {
 			fprintf(stderr, "test_send_faults_check notif came first\n");
 			return -1;
 		}
 
-		if (!(cqe->flags & IORING_CQE_F_NOTIF)) {
+		if (!(cqe->flags & IORING_CQE_F_NOTIF) || combined) {
 			if (cqe->res != expected) {
 				fprintf(stderr, "invalid cqe res %i vs expected %i, "
 					"user_data %i\n",
@@ -181,10 +238,14 @@ static int test_send_faults_check(struct io_uring *ring, int expected)
 		}
 
 		more = cqe->flags & IORING_CQE_F_MORE;
+		if (combined && more) {
+			fprintf(stderr, "combined with F_MORE\n");
+			return -1;
+		}
 		io_uring_cqe_seen(ring, cqe);
 	}
 
-	if (nr_cqes > 2) {
+	if (nr_cqes > 1 + !combined) {
 		fprintf(stderr, "test_send_faults_check() too many CQEs %i\n",
 				nr_cqes);
 		return -1;
@@ -193,11 +254,11 @@ static int test_send_faults_check(struct io_uring *ring, int expected)
 	return 0;
 }
 
-static int test_send_faults(int sock_tx, int sock_rx)
+static int test_send_faults(int sock_tx, int sock_rx, bool combined)
 {
+	unsigned zc_flags = combined ? IORING_SEND_ZC_COMBINED_CQE : 0;
 	struct io_uring_sqe *sqe;
 	int msg_flags = 0;
-	unsigned zc_flags = 0;
 	int ret, payload_size = 100;
 	struct io_uring ring;
 
@@ -215,7 +276,7 @@ static int test_send_faults(int sock_tx, int sock_rx)
 	ret = io_uring_submit(&ring);
 	assert(ret == 1);
 
-	ret = test_send_faults_check(&ring, -EFAULT);
+	ret = test_send_faults_check(&ring, -EFAULT, combined);
 	if (ret) {
 		fprintf(stderr, "test_send_faults with invalid buf failed\n");
 		return -1;
@@ -231,7 +292,7 @@ static int test_send_faults(int sock_tx, int sock_rx)
 	ret = io_uring_submit(&ring);
 	assert(ret == 1);
 
-	ret = test_send_faults_check(&ring, -EFAULT);
+	ret = test_send_faults_check(&ring, -EFAULT, combined);
 	if (ret) {
 		fprintf(stderr, "test_send_faults with invalid addr failed\n");
 		return -1;
@@ -245,7 +306,7 @@ static int test_send_faults(int sock_tx, int sock_rx)
 	ret = io_uring_submit(&ring);
 	assert(ret == 1);
 
-	ret = test_send_faults_check(&ring, -EINVAL);
+	ret = test_send_faults_check(&ring, -EINVAL, combined);
 	if (ret) {
 		fprintf(stderr, "test_send_faults with invalid flags failed\n");
 		return -1;
@@ -727,7 +788,7 @@ static int test_async_addr(struct io_uring *ring)
 }
 
 /* see also send_recv.c:test_invalid */
-static int test_invalid_zc(int fds[2])
+static int test_invalid_zc(int fds[2], bool combined)
 {
 	struct io_uring ring;
 	int ret;
@@ -750,13 +811,18 @@ static int test_invalid_zc(int fds[2])
 	ret = io_uring_submit(&ring);
 	if (ret != 1) {
 		fprintf(stderr, "submit failed %i\n", ret);
-		return ret;
+		return -1;
 	}
 	ret = io_uring_wait_cqe(&ring, &cqe);
 	if (ret)
 		return 1;
-	if (cqe->flags & IORING_CQE_F_MORE)
+	if (cqe->flags & IORING_CQE_F_MORE) {
+		if (combined) {
+			fprintf(stderr, "combined with IORING_CQE_F_MORE\n");
+			return 1;
+		}
 		notif = true;
+	}
 	io_uring_cqe_seen(&ring, cqe);
 
 	if (notif) {
@@ -784,6 +850,7 @@ static int run_basic_tests(void)
 	for (i = 0; i < 2; i++) {
 		struct io_uring ring;
 		unsigned ring_flags = 0;
+		int j = 0;
 
 		if (i & 1)
 			ring_flags |= IORING_SETUP_DEFER_TASKRUN;
@@ -796,22 +863,29 @@ static int run_basic_tests(void)
 			return -1;
 		}
 
-		ret = test_basic_send(&ring, sp[0], sp[1]);
-		if (ret) {
-			fprintf(stderr, "test_basic_send() failed\n");
-			return -1;
-		}
+		for (j = 0; j < 2; j++) {
+			bool combined = j & 1;
 
-		ret = test_send_faults(sp[0], sp[1]);
-		if (ret) {
-			fprintf(stderr, "test_send_faults() failed\n");
-			return -1;
-		}
+			if (combined && !support_combined)
+				continue;
 
-		ret = test_invalid_zc(sp);
-		if (ret) {
-			fprintf(stderr, "test_invalid_zc() failed\n");
-			return -1;
+			ret = test_basic_send(&ring, sp[0], sp[1], combined);
+			if (ret) {
+				fprintf(stderr, "test_basic_send() failed\n");
+				return -1;
+			}
+
+			ret = test_send_faults(sp[0], sp[1], combined);
+			if (ret) {
+				fprintf(stderr, "test_send_faults() failed\n");
+				return -1;
+			}
+
+			ret = test_invalid_zc(sp, combined);
+			if (ret) {
+				fprintf(stderr, "test_invalid_zc() failed\n");
+				return -1;
+			}
 		}
 
 		ret = test_async_addr(&ring);
