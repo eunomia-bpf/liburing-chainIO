@@ -214,6 +214,7 @@ test_srcs := \
 	wakeup-hang.c \
 	wq-aff.c \
 	xattr.c \
+	wait-timeout.c \
 	# EOL
 
 all_targets :=
