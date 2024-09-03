@@ -1262,6 +1262,62 @@ is a pointer to siginfo_t, if any, being filled in. See also
 .BR waitid(2)
 for the general description of the related system call. Available since 6.5.
 
+.TP
+.B BLOCK_URING_CMD_DISCARD
+Issue a discard command to the block device file.
+.I fd
+must point to a block device file,
+.I addr
+is the offset in bytes to start the operation from, and
+.I addr3
+should be set to the length of the operation in bytes.
+It is an asynchronous equivalent of
+.B BLOCK_URING_CMD_DISCARD.
+It allows multiple parallel discards, and it does not exclude concurrent writes
+and reads. As a result, it may lead to races for the data on the disk, and it's
+the user's responsibility to account for that. Furthermore, we only do best
+effort to invalidate page caches, the user has to make sure there are no other
+inflight requests are modifying or reading the range(s), otherwise it might
+result in stale page cache and data inconsistencies.
+
+Available since 6.12.
+
+.TP
+.B BLOCK_URING_CMD_WRITE_ZEROES
+Issue a write zeroes command to the block device file.
+.I fd
+must point to a block device file,
+.I addr
+is the offset in bytes to start the operation from, and
+.I addr3
+should be set to the length of the operation in bytes.
+It is an asynchronous equivalent of
+.B BLKZEROOUT.
+.B BLOCK_URING_CMD_WRITE_ZEROES
+has same limitations on concurrency as it is described in the notes to
+.B BLOCK_URING_CMD_DISCARD.
+
+Available since 6.12.
+
+.TP
+.B BLOCK_URING_CMD_WRITE_ZERO_PAGE
+Issue a write request with the payload consisting of zeroes to the block
+device file.
+.I fd
+should point to a block device file,
+.I addr
+is the offset in bytes within the disk to start the operation from, and
+.I addr3
+should be set to the length of the operation in bytes.
+It is an equivalent of
+.B BLOCK_URING_CMD_WRITE_ZEROES
+but doesn't require hardware support and could be less efficient.
+.B BLOCK_URING_CMD_WRITE_ZERO_PAGE
+has same limitations on concurrency as it is described in the notes to
+.B BLOCK_URING_CMD_DISCARD.
+
+Available since 6.12.
+
 .PP
 The
 .I flags
