@@ -284,6 +284,8 @@ int io_uring_setup(unsigned int entries, struct io_uring_params *p);
 int io_uring_register(unsigned int fd, unsigned int opcode, const void *arg,
 		      unsigned int nr_args);
 
+int io_uring_register_bpf(struct io_uring *ring, int fd);
+
 /*
  * Mapped/registered wait regions
  */

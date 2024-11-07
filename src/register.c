@@ -477,3 +477,12 @@ int io_uring_register_wait_reg(struct io_uring *ring,
 
 	return do_register(ring, IORING_REGISTER_CQWAIT_REG, &arg, 1);
 }
+
+int io_uring_register_bpf(struct io_uring *ring, int fd)
+{
+	struct io_uring_bpf_reg arg = {
+		.prog_fd = fd,
+	};
+
+	return do_register(ring, IORING_REGISTER_BPF, &arg, 1);
+}

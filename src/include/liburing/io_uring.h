@@ -617,6 +617,8 @@ enum io_uring_register_op {
 
 	IORING_REGISTER_CQWAIT_REG		= 34,
 
+	IORING_REGISTER_BPF			= 35,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -876,6 +878,13 @@ struct io_uring_recvmsg_out {
 	__u32 controllen;
 	__u32 payloadlen;
 	__u32 flags;
+};
+
+struct io_uring_bpf_reg {
+	__u64		prog_fd;
+	__u32		flags;
+	__u32		resv1;
+	__u64		resv2[2];
 };
 
 /*
