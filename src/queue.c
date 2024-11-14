@@ -323,7 +323,30 @@ int io_uring_wait_cqes_min_timeout(struct io_uring *ring,
 
 int io_uring_submit_and_wait_reg(struct io_uring *ring,
 				 struct io_uring_cqe **cqe_ptr,
-				 unsigned wait_nr, int reg_index)
+				 unsigned wait_nr, int arg_index)
+{
+	unsigned long offset = arg_index * sizeof(struct io_uring_reg_wait);
+
+	struct get_data data = {
+		.submit		= __io_uring_flush_sq(ring),
+		.wait_nr	= wait_nr,
+		.get_flags	= IORING_ENTER_EXT_ARG |
+				  IORING_ENTER_EXT_ARG_REG,
+		.sz		= sizeof(struct io_uring_reg_wait),
+		.has_ts		= true,
+		.arg		= (void *) (uintptr_t) offset,
+	};
+
+	if (!(ring->features & IORING_FEAT_EXT_ARG))
+		return -EINVAL;
+
+	return _io_uring_get_cqe(ring, cqe_ptr, &data);
+}
+
+/* test only */
+int io_uring_submit_and_wait_reg_offset(struct io_uring *ring,
+				 struct io_uring_cqe **cqe_ptr,
+				 unsigned wait_nr, unsigned long offset)
 {
 	struct get_data data = {
 		.submit		= __io_uring_flush_sq(ring),
@@ -332,7 +355,7 @@ int io_uring_submit_and_wait_reg(struct io_uring *ring,
 				  IORING_ENTER_EXT_ARG_REG,
 		.sz		= sizeof(struct io_uring_reg_wait),
 		.has_ts		= true,
-		.arg		= (void *) (uintptr_t) reg_index,
+		.arg		= (void *) (uintptr_t) offset,
 	};
 
 	if (!(ring->features & IORING_FEAT_EXT_ARG))

@@ -453,15 +453,8 @@ out:
 	return ret;
 }
 
-int io_uring_register_cqwait_reg(struct io_uring *ring,
-				 struct io_uring_reg_wait *reg, int nr)
+int io_uring_register_param_region(struct io_uring *ring,
+				   struct io_uring_mem_region_reg *reg)
 {
-	struct io_uring_cqwait_reg_arg arg = {
-		.flags		= 0,
-		.struct_size	= sizeof(*reg),
-		.nr_entries	= nr,
-		.user_addr	= (unsigned long) (uintptr_t) reg,
-	};
-
-	return do_register(ring, IORING_REGISTER_CQWAIT_REG, &arg, 1);
+	return do_register(ring, IORING_REGISTER_MEM_REGION, reg, 1);
 }
