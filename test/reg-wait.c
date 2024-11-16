@@ -21,6 +21,38 @@ static const struct io_uring_reg_wait brief_wait = {
 	.ts.tv_nsec = 1000,
 };
 
+static int __init_ring_with_region(struct io_uring *ring, unsigned ring_flags,
+				   struct io_uring_mem_region_reg *pr,
+				   bool disabled, bool reenable)
+{
+	int ret;
+
+	if (disabled)
+		ring_flags |= IORING_SETUP_R_DISABLED;
+
+	ret = io_uring_queue_init(8, ring, ring_flags);
+	if (ret) {
+		if (ret != -EINVAL)
+			fprintf(stderr, "ring setup failed: %d\n", ret);
+		return ret;
+	}
+
+	if (reenable) {
+		ret = io_uring_enable_rings(ring);
+		if (ret) {
+			io_uring_queue_exit(ring);
+			if (ret != -EINVAL)
+				fprintf(stderr, "io_uring_enable_rings failure %i\n", ret);
+			return ret;
+		}
+	}
+
+	ret = io_uring_register_region(ring, pr);
+	if (ret)
+		io_uring_queue_exit(ring);
+	return ret;
+}
+
 static int test_wait_reg_offset(struct io_uring *ring,
 				 unsigned wait_nr, unsigned long offset)
 {
@@ -222,27 +254,11 @@ static int test_try_register_region(struct io_uring_mem_region_reg *pr,
 				    bool disabled, bool reenable)
 {
 	struct io_uring ring;
-	int flags = 0;
 	int ret;
 
-	if (disabled)
-		flags = IORING_SETUP_R_DISABLED;
-
-	ret = io_uring_queue_init(8, &ring, flags);
-	if (ret) {
-		if (ret != -EINVAL)
-			fprintf(stderr, "ring setup failed: %d\n", ret);
-		return ret;
-	}
-
-	if (reenable) {
-		ret = io_uring_enable_rings(&ring);
-		if (ret)
-			return ret;
-	}
-
-	ret = io_uring_register_region(&ring, pr);
-	io_uring_queue_exit(&ring);
+	ret = __init_ring_with_region(&ring, 0, pr, disabled, reenable);
+	if (!ret)
+		io_uring_queue_exit(&ring);
 	return ret;
 }
 
