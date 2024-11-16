@@ -100,7 +100,7 @@ static int test_offsets(struct io_uring *ring)
 		return T_EXIT_FAIL;
 	}
 
-	offset = 4096 - sizeof(long);
+	offset = page_size - sizeof(long);
 	rw = (void *)reg + offset;
 	memset(rw, 0, sizeof(*rw));
 	rw->flags = IORING_REG_WAIT_TS;
@@ -257,14 +257,14 @@ static int test_regions(void)
 	void *buffer;
 	int ret;
 
-	buffer = aligned_alloc(4096, 4096 * 4);
+	buffer = aligned_alloc(page_size, page_size * 4);
 	if (!buffer) {
 		fprintf(stderr, "allocation failed\n");
 		return T_EXIT_FAIL;
 	}
 
 	rd.user_addr = (__u64)(unsigned long)buffer;
-	rd.size = 4096;
+	rd.size = page_size;
 	rd.flags = IORING_MEM_REGION_TYPE_USER;
 
 	mr.region_uptr = (__u64)(unsigned long)&rd;
@@ -290,13 +290,13 @@ static int test_regions(void)
 		return T_EXIT_FAIL;
 	}
 
-	rd.size = 4096 * 4;
+	rd.size = page_size * 4;
 	ret = test_try_register_region(&mr, true, false);
 	if (ret) {
 		fprintf(stderr, "test_try_register_region() 16KB fail %i\n", ret);
 		return T_EXIT_FAIL;
 	}
-	rd.size = 4096;
+	rd.size = page_size;
 
 	rd.user_addr = 0;
 	ret = test_try_register_region(&mr, true, false);
@@ -320,7 +320,7 @@ static int test_regions(void)
 		fprintf(stderr, "test_try_register_region() 0-size fail %i\n", ret);
 		return T_EXIT_FAIL;
 	}
-	rd.size = 4096;
+	rd.size = page_size;
 
 	mr.region_uptr = 0;
 	ret = test_try_register_region(&mr, true, false);
