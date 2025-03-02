@@ -373,7 +373,7 @@ static int has_nonvec_read(void)
 {
 	struct io_uring_probe *p;
 	struct io_uring ring;
-	int ret;
+	int ret = 0;
 
 	ret = io_uring_queue_init(1, &ring, 0);
 	if (ret) {
@@ -383,23 +383,24 @@ static int has_nonvec_read(void)
 
 	p = t_calloc(1, sizeof(*p) + 256 * sizeof(struct io_uring_probe_op));
 	ret = io_uring_register_probe(&ring, p, 256);
+
 	/* if we don't have PROBE_REGISTER, we don't have OP_READ/WRITE */
-	if (ret == -EINVAL) {
-out:
-		io_uring_queue_exit(&ring);
-		return 0;
-	} else if (ret) {
+	if (ret == -EINVAL)
+		goto out;
+	if (ret) {
 		fprintf(stderr, "register_probe: %d\n", ret);
 		goto out;
 	}
-
 	if (p->ops_len <= IORING_OP_READ)
 		goto out;
 	if (!(p->ops[IORING_OP_READ].flags & IO_URING_OP_SUPPORTED))
 		goto out;
+	ret = 1;
+out:
 	io_uring_queue_exit(&ring);
-	free(p);
-	return 1;
+	if (p)
+		free(p);
+	return ret;
 }
 
 static int test_eventfd_read(void)
