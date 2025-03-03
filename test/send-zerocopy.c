@@ -450,6 +450,11 @@ static int do_test_inet_send(struct io_uring *ring, int sock_client, int sock_se
 			else
 				io_uring_prep_sendmsg(sqe, sock_client, &msghdr[i], msg_flags);
 
+			if (real_fixed_buf) {
+				sqe->ioprio |= IORING_RECVSEND_FIXED_BUF;
+				sqe->buf_index = conf->buf_index;
+			}
+
 			if (!conf->iovec) {
 				io = &iov[i];
 				iov_len = 1;
