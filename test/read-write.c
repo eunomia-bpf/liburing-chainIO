@@ -22,6 +22,7 @@
 #define BUFFERS		(FILE_SIZE / BS)
 
 static struct iovec *vecs;
+static int has_nonvec;
 static int no_read;
 static int no_buf_select;
 static int no_buf_copy;
@@ -920,7 +921,7 @@ err:
 
 int main(int argc, char *argv[])
 {
-	int i, ret, nr;
+	int i, ret;
 	char buf[256];
 	char *fname;
 
@@ -937,17 +938,18 @@ int main(int argc, char *argv[])
 	signal(SIGXFSZ, SIG_IGN);
 
 	vecs = t_create_buffers(BUFFERS, BS);
+	has_nonvec = has_nonvec_read();
 
-	/* if we don't have nonvec read, skip testing that */
-	nr = has_nonvec_read() ? 64 : 32;
-
-	for (i = 0; i < nr; i++) {
+	for (i = 0; i < 64; i++) {
 		int write = (i & 1) != 0;
 		int buffered = (i & 2) != 0;
 		int sqthread = (i & 4) != 0;
 		int fixed = (i & 8) != 0;
 		int offload = (i & 16) != 0;
 		int nonvec = (i & 32) != 0;
+
+		if (nonvec && !has_nonvec)
+			continue;
 
 		ret = test_io(fname, write, buffered, sqthread, fixed, nonvec,
 			      BS, offload);
@@ -1049,13 +1051,16 @@ int main(int argc, char *argv[])
 	}
 
 	/* test fixed bufs with non-aligned len/offset */
-	for (i = 0; i < nr; i++) {
+	for (i = 0; i < 64; i++) {
 		int write = (i & 1) != 0;
 		int buffered = (i & 2) != 0;
 		int sqthread = (i & 4) != 0;
 		int fixed = (i & 8) != 0;
 		int offload = (i & 16) != 0;
 		int nonvec = (i & 32) != 0;
+
+		if (nonvec && !has_nonvec)
+			continue;
 
 		/* direct IO requires alignment, skip it */
 		if (!buffered || !fixed || nonvec)
