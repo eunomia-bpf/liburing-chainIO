@@ -370,7 +370,7 @@ static int read_poll_link(const char *file)
 	return 0;
 }
 
-static int has_nonvec_read(void)
+static void probe_readwrite(void)
 {
 	struct io_uring_probe *p;
 	struct io_uring ring;
@@ -392,16 +392,14 @@ static int has_nonvec_read(void)
 		fprintf(stderr, "register_probe: %d\n", ret);
 		goto out;
 	}
-	if (p->ops_len <= IORING_OP_READ)
-		goto out;
-	if (!(p->ops[IORING_OP_READ].flags & IO_URING_OP_SUPPORTED))
-		goto out;
-	ret = 1;
+
+	has_nonvec = p->ops_len > IORING_OP_READ &&
+		     (p->ops[IORING_OP_READ].flags & IO_URING_OP_SUPPORTED);
+
 out:
 	io_uring_queue_exit(&ring);
 	if (p)
 		free(p);
-	return ret;
 }
 
 static int test_eventfd_read(void)
@@ -938,7 +936,7 @@ int main(int argc, char *argv[])
 	signal(SIGXFSZ, SIG_IGN);
 
 	vecs = t_create_buffers(BUFFERS, BS);
-	has_nonvec = has_nonvec_read();
+	probe_readwrite();
 
 	for (i = 0; i < 64; i++) {
 		int write = (i & 1) != 0;
