@@ -240,6 +240,7 @@ test_srcs := \
 	wq-aff.c \
 	xattr.c \
 	zcrx.c \
+	regvec.c \
 	# EOL
 
 # Please keep this list sorted alphabetically.
