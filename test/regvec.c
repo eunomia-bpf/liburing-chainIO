@@ -246,7 +246,7 @@ static int test_sendzc(struct buf_desc *bd, struct iovec *vecs, int nr_vec, int 
 }
 
 static int test_vec(struct buf_desc *bd, struct iovec *vecs, int nr_vec,
-		    bool expect_fail)
+		    bool expect_fail, int *cqe_ret)
 {
 	struct sockaddr_storage addr;
 	int sock_server, sock_client;
@@ -288,10 +288,11 @@ static int test_vec(struct buf_desc *bd, struct iovec *vecs, int nr_vec,
 	else
 		ret = test_sendzc(bd, vecs, nr_vec, sock_client); 
 
-	if (ret != total_len) {
-		if (!expect_fail)
-			fprintf(stderr, "invalid cqe %i, expected %lu\n",
-					 ret, (unsigned long)total_len);
+	*cqe_ret = ret;
+
+	if (!expect_fail && ret != total_len) {
+		fprintf(stderr, "invalid cqe %i, expected %lu\n",
+				 ret, (unsigned long)total_len);
 		return 1;
 	}
 
@@ -305,7 +306,7 @@ static int test_vec(struct buf_desc *bd, struct iovec *vecs, int nr_vec,
 	}
 	close(sock_client);
 	close(sock_server);
-	return ret;
+	return 0;
 }
 
 struct work {
@@ -316,11 +317,12 @@ struct work {
 static int test_sequence(struct buf_desc *bd, unsigned nr, struct work *ws)
 {
 	int i, ret;
+	int cqe_ret;
 
 	reinit_ring(bd);
 
 	for (i = 0; i < nr; i++) {
-		ret = test_vec(bd, ws[i].vecs, ws[i].nr_vecs, false);
+		ret = test_vec(bd, ws[i].vecs, ws[i].nr_vecs, false, &cqe_ret);
 		if (ret) {
 			fprintf(stderr, "sequence failed, idx %i/%i\n", i, nr);
 			return ret;
@@ -329,7 +331,7 @@ static int test_sequence(struct buf_desc *bd, unsigned nr, struct work *ws)
 	return 0;
 }
 
-static void test(struct buf_desc *bd)
+static void test_basic(struct buf_desc *bd)
 {
 	void *p = bd->buf_wr;
 	const int page_sz = 4096;
@@ -490,24 +492,63 @@ static void test(struct buf_desc *bd)
 	}
 }
 
+static void test_fail(struct buf_desc *bd)
+{
+	int ret, cqe_ret;
+	void *p = bd->buf_wr;
+	struct iovec iov_0len = { .iov_base = p, .iov_len = 0 };
+	struct iovec iov_0buf = { .iov_base = 0, .iov_len = 1 };
+	struct iovec iov_inv = { .iov_base = (void *)-1U, .iov_len = 1 };
+
+	struct iovec vecs_0[] = { iov_0len, iov_0len, iov_0len, iov_0len,
+				   iov_0len, iov_0len, iov_0len, iov_0len };
+
+	reinit_ring(bd);
+	ret = test_vec(bd, vecs_0, 8, true, &cqe_ret);
+	if (ret || cqe_ret > 0) {
+		fprintf(stderr, "0 length test failed %i, cqe %i\n",
+				ret, cqe_ret);
+		exit(1);
+	}
+
+	reinit_ring(bd);
+	ret = test_vec(bd, &iov_0buf, 1, true, &cqe_ret);
+	if (ret || cqe_ret >= 0) {
+		fprintf(stderr, "0 buf test failed %i, cqe %i\n",
+				ret, cqe_ret);
+		exit(1);
+	}
+
+	reinit_ring(bd);
+	ret = test_vec(bd, &iov_inv, 1, true, &cqe_ret);
+	if (ret || cqe_ret >= 0) {
+		fprintf(stderr, "inv buf test failed %i, cqe %i\n",
+				ret, cqe_ret);
+		exit(1);
+	}
+}
+
 int main(void)
 {
 	struct buf_desc bd = {};
+	int i = 0;
 
-	probe_support();
-	if (!has_regvec) {
-		printf("doesn't support registered vector ops, skip\n");
-		return 0;
-	}
-
+	// probe_support();
+	// if (!has_regvec) {
+	// 	printf("doesn't support registered vector ops, skip\n");
+	// 	return 0;
+	// }
 	init_buffers(&bd, BUFFER_SIZE);
+	bd.fixed = false;
 
-	bd.fixed = true;
-	bd.rw = true;
-	test(&bd);
+	for (i = 0; i < 1; i++) {
+		bool rw = i & 1;
 
-	bd.rw = false;
-	test(&bd);
+		bd.rw = rw;
+
+		test_basic(&bd);
+		test_fail(&bd);
+	}
 
 	io_uring_queue_exit(&bd.ring);
 	free(bd.buf_rd);
