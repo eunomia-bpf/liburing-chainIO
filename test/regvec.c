@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
-#include <errno.h>
+#include <sys/mman.h>
+#include <linux/mman.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -7,9 +8,8 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <poll.h>
-#include <sys/eventfd.h>
-#include <sys/resource.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include "helpers.h"
 #include "liburing.h"
@@ -65,16 +65,18 @@ out:
 static void bind_ring(struct buf_desc *bd, struct io_uring *ring, unsigned buf_idx)
 {
 	size_t size = bd->size;
-	struct iovec iov[2];
+	struct iovec iov;
 	int ret;
 
-	iov[0].iov_len = size;
-	iov[0].iov_base = bd->buf_rd;
-	iov[1].iov_len = size;
-	iov[1].iov_base = bd->buf_wr;
+	iov.iov_len = size;
+	iov.iov_base = bd->buf_wr;
 
-	ret = io_uring_register_buffers_update_tag(ring, buf_idx, iov, NULL, 2);
-	if (ret != 2) {
+	ret = io_uring_register_buffers_update_tag(ring, buf_idx, &iov, NULL, 1);
+	if (ret != 1) {
+		if (geteuid()) {
+			fprintf(stderr, "Not root, skipping\n");
+			exit(0);
+		}
 		fprintf(stderr, "buf reg failed %i\n", ret);
 		exit(1);
 	}
@@ -109,11 +111,28 @@ static void reinit_ring(struct buf_desc *bd)
 
 static void init_buffers(struct buf_desc *bd, size_t size)
 {
+	void *start;
+	void *mem;
+
+	start = mmap(NULL, size + page_sz * 2, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	if (start == MAP_FAILED) {
+		fprintf(stderr, "Unable to preserve the page mixture memory.\n");
+		exit(1);
+	}
+
+	mem = mmap(start + page_sz, size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+	if (mem == MAP_FAILED) {
+		fprintf(stderr, "mmap fail\n");
+		exit(1);
+	}
+
 	memset(bd, 0, sizeof(*bd));
 	bd->size = size;
-	bd->buf_wr = malloc(size);
+	bd->buf_wr = mem;
 	bd->buf_rd = malloc(size);
-	if (!bd->buf_rd || !bd->buf_wr) {
+	if (!bd->buf_rd) {
 		fprintf(stderr, "malloc fail\n");
 		exit(1);
 	}
@@ -171,7 +190,7 @@ static void *verify_thread_cb(void *data)
 
 static int test_rw(struct buf_desc *bd, struct iovec *vecs, int nr_vec, int fd_wr)
 {
-	unsigned buf_idx = bd->buf_idx + 1;
+	unsigned buf_idx = bd->buf_idx;
 	struct io_uring *ring = &bd->ring;
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
@@ -201,7 +220,7 @@ static int test_rw(struct buf_desc *bd, struct iovec *vecs, int nr_vec, int fd_w
 
 static int test_sendzc(struct buf_desc *bd, struct iovec *vecs, int nr_vec, int fd_wr)
 {
-	unsigned buf_idx = bd->buf_idx + 1;
+	unsigned buf_idx = bd->buf_idx;
 	struct io_uring *ring = &bd->ring;
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
@@ -511,7 +530,8 @@ static void test_fail(struct buf_desc *bd)
 	struct iovec iov_0len = { .iov_base = p, .iov_len = 0 };
 	struct iovec iov_0buf = { .iov_base = 0, .iov_len = 1 };
 	struct iovec iov_inv = { .iov_base = (void *)-1U, .iov_len = 1 };
-
+	struct iovec iov_under = { .iov_base = p - 1, .iov_len = 1 };
+	struct iovec iov_over = { .iov_base = p + bd->size, .iov_len = 1 };
 	struct iovec vecs_0[] = { iov_0len, iov_0len, iov_0len, iov_0len,
 				   iov_0len, iov_0len, iov_0len, iov_0len };
 
@@ -538,6 +558,22 @@ static void test_fail(struct buf_desc *bd)
 				ret, cqe_ret);
 		exit(1);
 	}
+
+	reinit_ring(bd);
+	ret = test_vec(bd, &iov_under, 1, true, &cqe_ret);
+	if (ret || cqe_ret >= 0) {
+		fprintf(stderr, "inv buf underflow failed %i, cqe %i\n",
+				ret, cqe_ret);
+		exit(1);
+	}
+
+	reinit_ring(bd);
+	ret = test_vec(bd, &iov_over, 1, true, &cqe_ret);
+	if (ret || cqe_ret >= 0) {
+		fprintf(stderr, "inv buf overflow failed %i, cqe %i\n",
+				ret, cqe_ret);
+		exit(1);
+	}
 }
 
 int main(void)
@@ -547,16 +583,16 @@ int main(void)
 
 	page_sz = sysconf(_SC_PAGESIZE);
 
-	// probe_support();
-	// if (!has_regvec) {
-	// 	printf("doesn't support registered vector ops, skip\n");
-	// 	return 0;
-	// }
+	probe_support();
+	if (!has_regvec) {
+		printf("doesn't support registered vector ops, skip\n");
+		return 0;
+	}
 
 	init_buffers(&bd, page_sz * 32);
 	bd.fixed = false;
 
-	for (i = 0; i < 1; i++) {
+	for (i = 0; i < 2; i++) {
 		bool rw = i & 1;
 
 		bd.rw = rw;
@@ -565,9 +601,6 @@ int main(void)
 		test_fail(&bd);
 	}
 
-
 	io_uring_queue_exit(&bd.ring);
-	free(bd.buf_rd);
-	free(bd.buf_wr);
 	return 0;
 }
