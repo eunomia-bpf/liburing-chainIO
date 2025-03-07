@@ -28,8 +28,8 @@ struct buf_desc {
 	bool			rw;
 };
 
-#define BUFFER_SIZE	(4096 * 32)
 #define BUF_BASE_IDX	1
+static int page_sz;
 
 static void probe_support(void)
 {
@@ -111,8 +111,8 @@ static void init_buffers(struct buf_desc *bd, size_t size)
 {
 	memset(bd, 0, sizeof(*bd));
 	bd->size = size;
-	bd->buf_wr = malloc(BUFFER_SIZE);
-	bd->buf_rd = malloc(BUFFER_SIZE);
+	bd->buf_wr = malloc(size);
+	bd->buf_rd = malloc(size);
 	if (!bd->buf_rd || !bd->buf_wr) {
 		fprintf(stderr, "malloc fail\n");
 		exit(1);
@@ -334,7 +334,6 @@ static int test_sequence(struct buf_desc *bd, unsigned nr, struct work *ws)
 static void test_basic(struct buf_desc *bd)
 {
 	void *p = bd->buf_wr;
-	const int page_sz = 4096;
 	int ret;
 	struct iovec iov_page =		{ .iov_base = p,
 					  .iov_len = page_sz, };
@@ -347,9 +346,13 @@ static void test_basic(struct buf_desc *bd)
 	struct iovec iov_big_unalign =	{ .iov_base = p + 10,
 					  .iov_len = page_sz * 7 + 41, };
 	struct iovec iov_full =		{ .iov_base = p,
-					  .iov_len = BUFFER_SIZE, };
+					  .iov_len = bd->size, };
+	struct iovec iov_right1 =	{ .iov_base = p + bd->size - page_sz + 5,
+					  .iov_len = page_sz - 5 };
+	struct iovec iov_right2 =	{ .iov_base = p + bd->size - page_sz - 5,
+					  .iov_len = page_sz + 5 };
 	struct iovec iov_full_unalign = { .iov_base = p + 1,
-					  .iov_len = BUFFER_SIZE - 1, };
+					  .iov_len = bd->size - 1, };
 	struct iovec vecs[] = {
 		iov_page,
 		iov_big,
@@ -456,6 +459,15 @@ static void test_basic(struct buf_desc *bd)
 	}
 
 	ret = test_sequence(bd, 3, (struct work[]) {
+			{ &iov_right1, 1 },
+			{ &iov_right2, 1 },
+			{ &iov_right1, 1 }});
+	if (ret) {
+		fprintf(stderr, "seq failure: right aligned, %i\n", ret);
+		exit(1);
+	}
+
+	ret = test_sequence(bd, 3, (struct work[]) {
 			{ vecs_full, 1 },
 			{ vecs_full, 1 },
 			{ vecs_full, 3 }});
@@ -533,12 +545,15 @@ int main(void)
 	struct buf_desc bd = {};
 	int i = 0;
 
+	page_sz = sysconf(_SC_PAGESIZE);
+
 	// probe_support();
 	// if (!has_regvec) {
 	// 	printf("doesn't support registered vector ops, skip\n");
 	// 	return 0;
 	// }
-	init_buffers(&bd, BUFFER_SIZE);
+
+	init_buffers(&bd, page_sz * 32);
 	bd.fixed = false;
 
 	for (i = 0; i < 1; i++) {
@@ -549,6 +564,7 @@ int main(void)
 		test_basic(&bd);
 		test_fail(&bd);
 	}
+
 
 	io_uring_queue_exit(&bd.ring);
 	free(bd.buf_rd);
