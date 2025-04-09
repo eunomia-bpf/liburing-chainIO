@@ -58,6 +58,13 @@ struct thread_data {
 	int fd;
 };
 
+enum {
+	VERIFY_DISABLED = 0,
+	VERIFY_SEQ,
+
+	__MAX_VERIFY,
+};
+
 static bool cfg_reg_ringfd = true;
 static bool cfg_fixed_files = 1;
 static bool cfg_zc = 1;
@@ -74,8 +81,8 @@ static int  cfg_type		= 0;
 static int  cfg_payload_len;
 static int  cfg_port		= 8000;
 static int  cfg_runtime_ms	= 4200;
+static int  cfg_verify		= 0;
 static bool cfg_rx_poll		= false;
-
 static socklen_t cfg_alen;
 static char *str_addr = NULL;
 
@@ -198,19 +205,39 @@ static int do_poll(int fd, int events)
 	return ret && (pfd.revents & events);
 }
 
+static void verify_buffer(struct thread_data *td, char *buffer, size_t size)
+{
+	size_t i;
+
+	for (i = 0; i < size; i++) {
+		char d = payload[i];
+		char e = (td->bytes + i) % 26 + 'a';
+
+		if (e != d)
+			t_error(1, -EINVAL, "data mismatch");
+	}
+}
+
 /* Flush all outstanding bytes for the tcp receive queue */
 static int do_flush_tcp(struct thread_data *td, int fd)
 {
 	int ret;
 
+	if (cfg_verify == VERIFY_SEQ)
+		ret = recv(fd, payload_buf, sizeof(payload_buf), 0);
+	else
+		ret = recv(fd, NULL, 1 << 21, MSG_TRUNC | MSG_DONTWAIT);
+
 	/* MSG_TRUNC flushes up to len bytes */
-	ret = recv(fd, NULL, 1 << 21, MSG_TRUNC | MSG_DONTWAIT);
 	if (ret == -1 && errno == EAGAIN)
 		return 0;
 	if (ret == -1)
 		t_error(1, errno, "flush");
 	if (!ret)
 		return 1;
+
+	if (cfg_verify == VERIFY_SEQ)
+		verify_buffer(td, payload_buf, ret);
 
 	td->packets++;
 	td->bytes += ret;
@@ -391,6 +418,11 @@ static void do_tx(struct thread_data *td, int domain, int type, int protocol)
 		unsigned buf_idx = 0;
 		unsigned msg_flags = MSG_WAITALL;
 
+		if (cfg_verify) {
+			for (i = 0; i < cfg_payload_len; i++)
+				payload[i] = 'a' + ((i + td->bytes) % 26);
+		}
+
 		for (i = 0; i < cfg_nr_reqs; i++) {
 			sqe = io_uring_get_sqe(&ring);
 
@@ -515,7 +547,7 @@ static void parse_opts(int argc, char **argv)
 
 	cfg_payload_len = max_payload_len;
 
-	while ((c = getopt(argc, argv, "46D:p:s:t:n:z:b:l:dC:T:Ry")) != -1) {
+	while ((c = getopt(argc, argv, "46v:D:p:s:t:n:z:b:l:dC:T:Ry")) != -1) {
 		switch (c) {
 		case '4':
 			if (cfg_family != PF_UNSPEC)
@@ -570,7 +602,19 @@ static void parse_opts(int argc, char **argv)
 		case 'y':
 			cfg_rx_poll = 1;
 			break;
+		case 'v':
+			cfg_verify = strtoul(optarg, NULL, 0);
+			break;
 		}
+	}
+
+	if (cfg_verify >= __MAX_VERIFY)
+		t_error(1, 0, "unsupported data verification type");
+	if (cfg_verify) {
+		if (!cfg_rx && cfg_zc)
+			t_error(1, 0, "verification doesn't work with sendzc");
+		if (cfg_verify == VERIFY_SEQ && cfg_nr_reqs > 1 && !cfg_zc)
+			t_error(1, 0, "sequence verification invalid inflight number");
 	}
 
 	if (cfg_nr_reqs > MAX_SUBMIT_NR)
