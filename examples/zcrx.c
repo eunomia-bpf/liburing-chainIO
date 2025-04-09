@@ -52,6 +52,12 @@ static void t_error(int status, int errnum, const char *format, ...)
 	exit(status);
 }
 
+enum {
+	AREA_NORMAL,
+	AREA_HUGE,
+	AREA_HUGE_OFFSET,
+};
+
 #define PAGE_SIZE (4096)
 #define AREA_SIZE (8192 * PAGE_SIZE)
 #define SEND_SIZE (512 * 4096)
@@ -86,6 +92,7 @@ static unsigned long area_token;
 static int connfd;
 static bool stop;
 static size_t received;
+static int area_type = AREA_NORMAL;
 
 static inline size_t get_refill_ring_size(unsigned int rq_entries)
 {
@@ -93,6 +100,43 @@ static inline size_t get_refill_ring_size(unsigned int rq_entries)
 	/* add space for the header (head/tail/etc.) */
 	ring_size += PAGE_SIZE;
 	return ALIGN_UP(ring_size, 4096);
+}
+
+static void allocate_area(void)
+{
+	unsigned flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+	unsigned prot = PROT_READ | PROT_WRITE;
+	void *map_base, *map_start;
+
+	map_base = mmap(NULL, 4 * AREA_SIZE, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	if (map_base == MAP_FAILED)
+		t_error(1, 0, "base mmap failed\n");
+
+	map_start = map_base + AREA_SIZE;
+
+	if (area_type == AREA_NORMAL) {
+		area_ptr = mmap(map_start, AREA_SIZE, prot,
+				flags, 0, 0);
+		if (area_ptr == MAP_FAILED)
+			t_error(1, 0, "mmap(): zero copy area");
+	} else if (area_type == AREA_HUGE) {
+		area_ptr = mmap(map_start, AREA_SIZE, prot,
+				flags | MAP_HUGETLB | MAP_HUGE_2MB,
+				-1, 0);
+		if (area_ptr == MAP_FAILED)
+			t_error(1, 0, "mmap(): zero copy area");
+	} else if (area_type == AREA_HUGE_OFFSET) {
+		size_t mb2 = 1UL << 21;
+
+		area_ptr = mmap(map_start, AREA_SIZE + 2 * mb2, prot,
+				flags | MAP_HUGETLB | MAP_HUGE_2MB,
+				-1, 0);
+		if (area_ptr == MAP_FAILED)
+			t_error(1, 0, "mmap(): zero copy area");
+
+		area_ptr += mb2 - PAGE_SIZE * 2;
+	}
 }
 
 static void setup_zcrx(struct io_uring *ring)
@@ -105,14 +149,7 @@ static void setup_zcrx(struct io_uring *ring)
 	if (!ifindex)
 		t_error(1, 0, "bad interface name: %s", cfg_ifname);
 
-	area_ptr = mmap(NULL,
-			AREA_SIZE,
-			PROT_READ | PROT_WRITE,
-			MAP_ANONYMOUS | MAP_PRIVATE,
-			0,
-			0);
-	if (area_ptr == MAP_FAILED)
-		t_error(1, 0, "mmap(): zero copy area");
+	allocate_area();
 
 	ring_size = get_refill_ring_size(rq_entries);
 	ring_ptr = mmap(NULL,
