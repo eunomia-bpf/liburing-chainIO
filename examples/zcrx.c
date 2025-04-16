@@ -43,6 +43,14 @@
 #define AREA_SIZE (8192 * PAGE_SIZE)
 #define SEND_SIZE (512 * 4096)
 
+#define REQ_TYPE_SHIFT	3
+#define REQ_TYPE_MASK	((1UL << REQ_TYPE_SHIFT) - 1)
+
+enum request_type {
+	REQ_TYPE_ACCEPT		= 1,
+	REQ_TYPE_RX		= 2,
+};
+
 static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
@@ -135,7 +143,7 @@ static void add_accept(struct io_uring *ring, int sockfd)
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 
 	io_uring_prep_accept(sqe, sockfd, NULL, NULL, 0);
-	sqe->user_data = 1;
+	sqe->user_data = REQ_TYPE_ACCEPT;
 }
 
 static void add_recvzc(struct io_uring *ring, int sockfd)
@@ -145,7 +153,7 @@ static void add_recvzc(struct io_uring *ring, int sockfd)
 	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, sockfd, NULL, 0, 0);
 	sqe->ioprio |= IORING_RECV_MULTISHOT;
 	sqe->zcrx_ifq_idx = zcrx_id;
-	sqe->user_data = 2;
+	sqe->user_data = REQ_TYPE_RX;
 }
 
 static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
@@ -215,12 +223,16 @@ static void server_loop(struct io_uring *ring)
 	io_uring_submit_and_wait(ring, 1);
 
 	io_uring_for_each_cqe(ring, head, cqe) {
-		if (cqe->user_data == 1)
+		switch (cqe->user_data & REQ_TYPE_MASK) {
+		case REQ_TYPE_ACCEPT:
 			process_accept(ring, cqe);
-		else if (cqe->user_data == 2)
+			break;
+		case REQ_TYPE_RX:
 			process_recvzc(ring, cqe);
-		else
+			break;
+		default:
 			t_error(1, 0, "unknown cqe");
+		}
 		count++;
 	}
 	io_uring_cq_advance(ring, count);
