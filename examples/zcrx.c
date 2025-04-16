@@ -51,6 +51,11 @@ enum request_type {
 	REQ_TYPE_RX		= 2,
 };
 
+struct t_zcrx_conn {
+	int sockfd;
+	unsigned long received;
+};
+
 static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
@@ -62,10 +67,10 @@ static void *ring_ptr;
 static size_t ring_size;
 static struct io_uring_zcrx_rq rq_ring;
 static unsigned long area_token;
-static int connfd;
 static bool stop;
-static size_t received;
 static __u32 zcrx_id;
+
+static struct t_zcrx_conn connection;
 
 static inline size_t get_refill_ring_size(unsigned int rq_entries)
 {
@@ -158,13 +163,15 @@ static void add_recvzc(struct io_uring *ring, int sockfd)
 
 static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 {
+	struct t_zcrx_conn *conn = &connection;
+
 	if (cqe->res < 0)
 		t_error(1, 0, "accept()");
-	if (connfd)
+	if (conn->sockfd)
 		t_error(1, 0, "Unexpected second connection");
 
-	connfd = cqe->res;
-	add_recvzc(ring, connfd);
+	conn->sockfd = cqe->res;
+	add_recvzc(ring, conn->sockfd);
 }
 
 static void verify_data(char *data, size_t size, unsigned long seq)
@@ -184,6 +191,7 @@ static void verify_data(char *data, size_t size, unsigned long seq)
 
 static void process_recvzc(struct io_uring *ring, struct io_uring_cqe *cqe)
 {
+	struct t_zcrx_conn *conn = &connection;
 	unsigned rq_mask = rq_ring.ring_entries - 1;
 	struct io_uring_zcrx_cqe *rcqe;
 	struct io_uring_zcrx_rqe *rqe;
@@ -199,14 +207,14 @@ static void process_recvzc(struct io_uring *ring, struct io_uring_cqe *cqe)
 	}
 
 	if (!(cqe->flags & IORING_CQE_F_MORE))
-		add_recvzc(ring, connfd);
+		add_recvzc(ring, conn->sockfd);
 
 	rcqe = (struct io_uring_zcrx_cqe *)(cqe + 1);
 	mask = (1ULL << IORING_ZCRX_AREA_SHIFT) - 1;
 	data = (char *)area_ptr + (rcqe->off & mask);
 
-	verify_data(data, cqe->res, received);
-	received += cqe->res;
+	verify_data(data, cqe->res, conn->received);
+	conn->received += cqe->res;
 
 	/* processed, return back to the kernel */
 	rqe = &rq_ring.rqes[rq_ring.rq_tail & rq_mask];
