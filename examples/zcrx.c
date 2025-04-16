@@ -62,6 +62,7 @@ static int cfg_queue_id = -1;
 static bool cfg_verify_data = false;
 static struct sockaddr_in6 cfg_addr;
 
+static int accept_fd;
 static void *area_ptr;
 static void *ring_ptr;
 static size_t ring_size;
@@ -70,7 +71,9 @@ static unsigned long area_token;
 static bool stop;
 static __u32 zcrx_id;
 
-static struct t_zcrx_conn connection;
+#define MAX_CONNECTIONS		16
+static struct t_zcrx_conn connections[MAX_CONNECTIONS];
+static int nr_conns;
 
 static inline size_t get_refill_ring_size(unsigned int rq_entries)
 {
@@ -151,27 +154,31 @@ static void add_accept(struct io_uring *ring, int sockfd)
 	sqe->user_data = REQ_TYPE_ACCEPT;
 }
 
-static void add_recvzc(struct io_uring *ring, int sockfd)
+static void add_recvzc(struct io_uring *ring, int sockfd, unsigned conn_idx)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 
 	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, sockfd, NULL, 0, 0);
 	sqe->ioprio |= IORING_RECV_MULTISHOT;
 	sqe->zcrx_ifq_idx = zcrx_id;
-	sqe->user_data = REQ_TYPE_RX;
+	sqe->user_data = REQ_TYPE_RX | (conn_idx << REQ_TYPE_SHIFT);
 }
 
 static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 {
-	struct t_zcrx_conn *conn = &connection;
+	struct t_zcrx_conn *conn;
 
 	if (cqe->res < 0)
 		t_error(1, 0, "accept()");
-	if (conn->sockfd)
-		t_error(1, 0, "Unexpected second connection");
+	if (nr_conns >= MAX_CONNECTIONS)
+		t_error(1, 0, "Too many connections");
 
+	conn = &connections[nr_conns];
 	conn->sockfd = cqe->res;
-	add_recvzc(ring, conn->sockfd);
+	add_recvzc(ring, conn->sockfd, nr_conns);
+	nr_conns++;
+
+	add_accept(ring, accept_fd);
 }
 
 static void verify_data(char *data, size_t size, unsigned long seq)
@@ -191,23 +198,27 @@ static void verify_data(char *data, size_t size, unsigned long seq)
 
 static void process_recvzc(struct io_uring *ring, struct io_uring_cqe *cqe)
 {
-	struct t_zcrx_conn *conn = &connection;
+	unsigned conn_idx = cqe->user_data >> REQ_TYPE_SHIFT;
+	struct t_zcrx_conn *conn = &connections[conn_idx];
 	unsigned rq_mask = rq_ring.ring_entries - 1;
 	struct io_uring_zcrx_cqe *rcqe;
 	struct io_uring_zcrx_rqe *rqe;
 	uint64_t mask;
 	char *data;
 
-	if (cqe->res < 0)
-		t_error(1, 0, "recvzc(): %d", cqe->res);
-
-	if (cqe->res == 0 && cqe->flags == 0) {
-		stop = true;
+	if (cqe->res <= 0) {
+		if (cqe->res < 0) {
+			printf("connection %i failed %i\n", conn_idx, cqe->res);
+			stop = true;
+			}
+		if (cqe->flags & IORING_CQE_F_MORE)
+			t_error(1, 0, "unexpected IORING_CQE_F_MORE");
+		close(conn->sockfd);
 		return;
 	}
 
 	if (!(cqe->flags & IORING_CQE_F_MORE))
-		add_recvzc(ring, conn->sockfd);
+		add_recvzc(ring, conn->sockfd, conn_idx);
 
 	rcqe = (struct io_uring_zcrx_cqe *)(cqe + 1);
 	mask = (1ULL << IORING_ZCRX_AREA_SHIFT) - 1;
@@ -250,22 +261,22 @@ static void run_server(void)
 {
 	unsigned int flags = 0;
 	struct io_uring ring;
-	int fd, enable, ret;
+	int enable, ret;
 
-	fd = socket(AF_INET6, SOCK_STREAM, 0);
-	if (fd == -1)
+	accept_fd = socket(AF_INET6, SOCK_STREAM, 0);
+	if (accept_fd == -1)
 		t_error(1, 0, "socket()");
 
 	enable = 1;
-	ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
+	ret = setsockopt(accept_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
 	if (ret < 0)
 		t_error(1, 0, "setsockopt(SO_REUSEADDR)");
 
-	ret = bind(fd, (struct sockaddr *)&cfg_addr, sizeof(cfg_addr));
+	ret = bind(accept_fd, (struct sockaddr *)&cfg_addr, sizeof(cfg_addr));
 	if (ret < 0)
 		t_error(1, 0, "bind()");
 
-	if (listen(fd, 1024) < 0)
+	if (listen(accept_fd, 1024) < 0)
 		t_error(1, 0, "listen()");
 
 	flags |= IORING_SETUP_COOP_TASKRUN;
@@ -279,7 +290,7 @@ static void run_server(void)
 		t_error(1, ret, "ring init failed");
 
 	setup_zcrx(&ring);
-	add_accept(&ring, fd);
+	add_accept(&ring, accept_fd);
 
 	while (!stop)
 		server_loop(&ring);
