@@ -39,6 +39,13 @@
 #include "liburing.h"
 #include "helpers.h"
 
+enum {
+	RQ_ALLOC_USER,
+	RQ_ALLOC_KERNEL,
+
+	__RQ_ALLOC_MAX,
+};
+
 static long page_size;
 #define AREA_SIZE (8192 * page_size)
 #define SEND_SIZE (512 * 4096)
@@ -55,6 +62,7 @@ static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
 static bool cfg_verify_data = false;
+static unsigned cfg_rq_alloc_mode = RQ_ALLOC_USER;
 static struct sockaddr_in6 cfg_addr;
 
 static void *area_ptr;
@@ -79,6 +87,7 @@ static void setup_zcrx(struct io_uring *ring)
 {
 	unsigned int ifindex;
 	unsigned int rq_entries = 4096;
+	unsigned rq_flags = 0;
 	int ret;
 
 	ifindex = if_nametoindex(cfg_ifname);
@@ -95,19 +104,22 @@ static void setup_zcrx(struct io_uring *ring)
 		t_error(1, 0, "mmap(): zero copy area");
 
 	ring_size = get_refill_ring_size(rq_entries);
-	ring_ptr = mmap(NULL,
-			ring_size,
-			PROT_READ | PROT_WRITE,
-			MAP_ANONYMOUS | MAP_PRIVATE,
-			0,
-			0);
-	if (ring_ptr == MAP_FAILED)
-		t_error(1, 0, "mmap(): refill ring");
+
+	ring_ptr = NULL;
+	if (cfg_rq_alloc_mode == RQ_ALLOC_USER) {
+		ring_ptr = mmap(NULL, ring_size,
+				PROT_READ | PROT_WRITE,
+				MAP_ANONYMOUS | MAP_PRIVATE,
+				0, 0);
+		if (ring_ptr == MAP_FAILED)
+			t_error(1, 0, "mmap(): refill ring");
+		rq_flags |= IORING_MEM_REGION_TYPE_USER;
+	}
 
 	struct io_uring_region_desc region_reg = {
 		.size = ring_size,
 		.user_addr = (__u64)(unsigned long)ring_ptr,
-		.flags = IORING_MEM_REGION_TYPE_USER,
+		.flags = rq_flags,
 	};
 
 	struct io_uring_zcrx_area_reg area_reg = {
@@ -127,6 +139,15 @@ static void setup_zcrx(struct io_uring *ring)
 	ret = io_uring_register_ifq(ring, &reg);
 	if (ret)
 		t_error(1, 0, "io_uring_register_ifq(): %d", ret);
+
+	if (cfg_rq_alloc_mode == RQ_ALLOC_USER) {
+		ring_ptr = mmap(NULL, ring_size,
+				PROT_READ | PROT_WRITE,
+				MAP_SHARED | MAP_POPULATE,
+				ring->ring_fd, region_reg.mmap_offset);
+		if (ring_ptr == MAP_FAILED)
+			t_error(1, 0, "mmap(): refill ring");
+	}
 
 	rq_ring.khead = (unsigned int *)((char *)ring_ptr + reg.offsets.head);
 	rq_ring.ktail = (unsigned int *)((char *)ring_ptr + reg.offsets.tail);
@@ -290,7 +311,7 @@ static void parse_opts(int argc, char **argv)
 	if (argc <= 1)
 		usage(argv[0]);
 
-	while ((c = getopt(argc, argv, "vp:i:q:")) != -1) {
+	while ((c = getopt(argc, argv, "vp:i:q:a:")) != -1) {
 		switch (c) {
 		case 'p':
 			cfg_port = strtoul(optarg, NULL, 0);
@@ -303,6 +324,11 @@ static void parse_opts(int argc, char **argv)
 			break;
 		case 'v':
 			cfg_verify_data = true;
+			break;
+		case 'a':
+			cfg_rq_alloc_mode = strtoul(optarg, NULL, 0);
+			if (cfg_rq_alloc_mode >= __RQ_ALLOC_MAX)
+				t_error(1, 0, "invalid RQ allocation mode");
 			break;
 		}
 	}
