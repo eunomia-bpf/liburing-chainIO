@@ -58,22 +58,28 @@ enum request_type {
 	REQ_TYPE_RX		= 2,
 };
 
+struct connection {
+	int sockfd;
+	unsigned long received;
+};
+
 static int cfg_port = 8000;
 static const char *cfg_ifname;
 static int cfg_queue_id = -1;
 static bool cfg_verify_data = false;
 static size_t cfg_size = 0;
 static unsigned cfg_rq_alloc_mode = RQ_ALLOC_USER;
+static unsigned cfg_nr_conns = 1;
 static struct sockaddr_in6 cfg_addr;
 
+static int inflight_conn;
+static int accept_fd;
 static void *area_ptr;
 static void *ring_ptr;
 static size_t ring_size;
 static struct io_uring_zcrx_rq rq_ring;
 static unsigned long area_token;
-static int connfd;
 static bool stop;
-static size_t received;
 static __u32 zcrx_id;
 
 static inline size_t get_refill_ring_size(unsigned int rq_entries)
@@ -168,25 +174,39 @@ static void add_accept(struct io_uring *ring, int sockfd)
 	sqe->user_data = REQ_TYPE_ACCEPT;
 }
 
-static void add_recvzc(struct io_uring *ring, int sockfd, size_t len)
+static void add_recvzc(struct io_uring *ring, struct connection *conn,
+			size_t len)
 {
 	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
 
-	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, sockfd, NULL, len, 0);
+	io_uring_prep_rw(IORING_OP_RECV_ZC, sqe, conn->sockfd, NULL, len, 0);
 	sqe->ioprio |= IORING_RECV_MULTISHOT;
 	sqe->zcrx_ifq_idx = zcrx_id;
-	sqe->user_data = REQ_TYPE_RX;
+	sqe->user_data = REQ_TYPE_RX | (unsigned long)conn;
+
+	if ((unsigned long)conn & REQ_TYPE_MASK)
+		t_error(1, 0, "Bogus recvzc user_data");
 }
 
 static void process_accept(struct io_uring *ring, struct io_uring_cqe *cqe)
 {
+	struct connection *conn;
+
 	if (cqe->res < 0)
 		t_error(1, 0, "accept()");
-	if (connfd)
-		t_error(1, 0, "Unexpected second connection");
 
-	connfd = cqe->res;
-	add_recvzc(ring, connfd, cfg_size);
+	conn = malloc(sizeof(*conn));
+	if (!conn)
+		t_error(1, 0, "can't allocate connection");
+
+	conn->sockfd = cqe->res;
+	conn->received = 0;
+	add_recvzc(ring, conn, cfg_size);
+
+	inflight_conn++;
+	cfg_nr_conns--;
+	if (cfg_nr_conns > 0)
+		add_accept(ring, accept_fd);
 }
 
 static void verify_data(char *data, size_t size, unsigned long seq)
@@ -204,9 +224,22 @@ static void verify_data(char *data, size_t size, unsigned long seq)
 	}
 }
 
+static void close_connection(struct connection *conn)
+{
+	printf("connection closed, bytes received %lu\n", conn->received);
+
+	close(conn->sockfd);
+	free(conn);
+	inflight_conn--;
+
+	if (cfg_nr_conns == 0 && inflight_conn == 0)
+		stop = true;
+}
+
 static void process_recvzc(struct io_uring __attribute__((unused)) *ring,
 			   struct io_uring_cqe *cqe)
 {
+	struct connection *conn = (void *)(unsigned long)(cqe->user_data & ~REQ_TYPE_MASK);
 	unsigned rq_mask = rq_ring.ring_entries - 1;
 	struct io_uring_zcrx_cqe *rcqe;
 	struct io_uring_zcrx_rqe *rqe;
@@ -216,10 +249,10 @@ static void process_recvzc(struct io_uring __attribute__((unused)) *ring,
 	if (!(cqe->flags & IORING_CQE_F_MORE)) {
 		if (!cfg_size || cqe->res != 0)
 			t_error(1, 0, "invalid final recvzc ret %i", cqe->res);
-		if (received != cfg_size)
+		if (conn->received != cfg_size)
 			t_error(1, 0, "total receive size mismatch %lu / %lu",
-				received, cfg_size);
-		stop = true;
+				conn->received, cfg_size);
+		close_connection(conn);
 		return;
 	}
 	if (cqe->res < 0)
@@ -229,8 +262,8 @@ static void process_recvzc(struct io_uring __attribute__((unused)) *ring,
 	mask = (1ULL << IORING_ZCRX_AREA_SHIFT) - 1;
 	data = (char *)area_ptr + (rcqe->off & mask);
 
-	verify_data(data, cqe->res, received);
-	received += cqe->res;
+	verify_data(data, cqe->res, conn->received);
+	conn->received += cqe->res;
 
 	/* processed, return back to the kernel */
 	rqe = &rq_ring.rqes[rq_ring.rq_tail & rq_mask];
@@ -266,22 +299,22 @@ static void run_server(void)
 {
 	unsigned int flags = 0;
 	struct io_uring ring;
-	int fd, enable, ret;
+	int enable, ret;
 
-	fd = socket(AF_INET6, SOCK_STREAM, 0);
-	if (fd == -1)
+	accept_fd = socket(AF_INET6, SOCK_STREAM, 0);
+	if (accept_fd == -1)
 		t_error(1, 0, "socket()");
 
 	enable = 1;
-	ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
+	ret = setsockopt(accept_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
 	if (ret < 0)
 		t_error(1, 0, "setsockopt(SO_REUSEADDR)");
 
-	ret = bind(fd, (struct sockaddr *)&cfg_addr, sizeof(cfg_addr));
+	ret = bind(accept_fd, (struct sockaddr *)&cfg_addr, sizeof(cfg_addr));
 	if (ret < 0)
 		t_error(1, 0, "bind()");
 
-	if (listen(fd, 1024) < 0)
+	if (listen(accept_fd, 1024) < 0)
 		t_error(1, 0, "listen()");
 
 	flags |= IORING_SETUP_COOP_TASKRUN;
@@ -295,7 +328,7 @@ static void run_server(void)
 		t_error(1, ret, "ring init failed");
 
 	setup_zcrx(&ring);
-	add_accept(&ring, fd);
+	add_accept(&ring, accept_fd);
 
 	while (!stop)
 		server_loop(&ring);
@@ -314,7 +347,7 @@ static void parse_opts(int argc, char **argv)
 	if (argc <= 1)
 		usage(argv[0]);
 
-	while ((c = getopt(argc, argv, "vp:i:q:s:r:")) != -1) {
+	while ((c = getopt(argc, argv, "vp:i:q:s:r:N:")) != -1) {
 		switch (c) {
 		case 'p':
 			cfg_port = strtoul(optarg, NULL, 0);
@@ -335,6 +368,9 @@ static void parse_opts(int argc, char **argv)
 			cfg_rq_alloc_mode = strtoul(optarg, NULL, 0);
 			if (cfg_rq_alloc_mode >= __RQ_ALLOC_MAX)
 				t_error(1, 0, "invalid RQ allocation mode");
+			break;
+		case 'N':
+			cfg_nr_conns = strtoul(optarg, NULL, 0);
 			break;
 		}
 	}
