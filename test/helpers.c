@@ -484,3 +484,20 @@ int t_create_socketpair_ip(struct sockaddr_storage *addr,
 	}
 	return 0;
 }
+
+int t_submit_and_wait_single(struct io_uring *ring, struct io_uring_cqe **cqe)
+{
+	int ret;
+
+	ret = io_uring_submit(ring);
+	if (ret <= 0) {
+		fprintf(stderr, "sqe submit failed: %d\n", ret);
+		return -1;
+	}
+	ret = io_uring_wait_cqe(ring, cqe);
+	if (ret < 0) {
+		fprintf(stderr, "wait completion %d\n", ret);
+		return ret;
+	}
+	return 0;
+}

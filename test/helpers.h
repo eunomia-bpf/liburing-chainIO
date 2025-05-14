@@ -120,6 +120,15 @@ unsigned long long mtime_since_now(struct timeval *tv);
 unsigned long long utime_since(const struct timeval *s, const struct timeval *e);
 unsigned long long utime_since_now(struct timeval *tv);
 
+static inline void t_sqe_prep_cmd(struct io_uring_sqe *sqe,
+				  int fd, unsigned cmd_op)
+{
+	io_uring_prep_rw(IORING_OP_URING_CMD, sqe, fd, NULL, 0, 0);
+	sqe->cmd_op = cmd_op;
+}
+
+int t_submit_and_wait_single(struct io_uring *ring, struct io_uring_cqe **cqe);
+
 #ifdef __cplusplus
 }
 #endif
