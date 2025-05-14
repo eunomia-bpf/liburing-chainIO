@@ -245,6 +245,7 @@ test_srcs := \
 	xattr.c \
 	zcrx.c \
 	vec-regbuf.c \
+	mock_tests.c \
 	# EOL
 
 # Please keep this list sorted alphabetically.
