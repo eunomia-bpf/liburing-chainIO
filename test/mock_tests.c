@@ -17,6 +17,11 @@ static struct io_uring mgr_ring;
 static __u64 mock_features;
 static int mgr_fd;
 
+static bool has_feature(int feature)
+{
+	return mock_features >= feature;
+}
+
 static int setup_mgr(void)
 {
 	struct io_uring_mock_probe mp;
@@ -228,7 +233,7 @@ static int test_cmds(void)
 		return 1;
 	}
 
-	if (IORING_MOCK_FEAT_CMD_COPY < mock_features) {
+	if (has_feature(IORING_MOCK_FEAT_CMD_COPY)) {
 		ret = test_regvec_cmd(&ring, mock_fd);
 		if (ret) {
 			fprintf(stderr, "test_regvec_cmd() failed\n");
@@ -238,6 +243,108 @@ static int test_cmds(void)
 		printf("skip test_regvec_cmd()\n");
 	}
 
+	io_uring_queue_exit(&ring);
+	return 0;
+}
+
+static int test_reads(struct io_uring *ring, int mock_fd, void *buffer)
+{
+	struct io_uring_cqe *cqe;
+	struct io_uring_sqe *sqe;
+	int io_len = 4096;
+	int nr_reqs = 16;
+	int i, ret;
+
+	for (i = 0; i < nr_reqs; i++) {
+		sqe = io_uring_get_sqe(ring);
+		io_uring_prep_read(sqe, mock_fd, buffer, io_len, 0);
+		sqe->user_data = i;
+	}
+
+	ret = io_uring_submit(ring);
+	if (ret != nr_reqs) {
+		fprintf(stderr, "submit got %d, wanted %d\n", ret, nr_reqs);
+		return T_EXIT_FAIL;
+	}
+
+	for (i = 0; i < nr_reqs; i++) {
+		ret = io_uring_wait_cqe(ring, &cqe);
+		if (ret) {
+			fprintf(stderr, "wait_cqe=%d\n", ret);
+			return T_EXIT_FAIL;
+		}
+		if (cqe->res != io_len) {
+			fprintf(stderr, "unexpected cqe res %i, data %i\n",
+				cqe->res, (int)cqe->user_data);
+			return T_EXIT_FAIL;
+		}
+		io_uring_cqe_seen(ring, cqe);
+	}
+	return 0;
+}
+
+static int test_rw(void)
+{
+	void *buffer;
+	struct io_uring ring;
+	int ret, i;
+
+	if (!has_feature(IORING_MOCK_FEAT_RW_ZERO)) {
+		printf("no mock read-write support, skip\n");
+		return T_EXIT_SKIP;
+	}
+
+	buffer = malloc(4096);
+	if (!buffer) {
+		fprintf(stderr, "can't allocate buffers\n");
+		return T_EXIT_FAIL;
+	}
+
+	ret = io_uring_queue_init(32, &ring, 0);
+	if (ret) {
+		fprintf(stderr, "ring setup failed: %d\n", ret);
+		return 1;
+	}
+
+	for (i = 0; i < 8; i++) {
+		struct io_uring_mock_create mc;
+		bool nowait = i & 1;
+		bool async = i & 2;
+		bool poll = i & 4;
+		int mock_fd;
+
+		memset(&mc, 0, sizeof(mc));
+		if (poll) {
+			if (!has_feature(IORING_MOCK_FEAT_POLL))
+				continue;
+			mc.flags |= IORING_MOCK_CREATE_F_POLL;
+		}
+		if (nowait) {
+			if (!has_feature(IORING_MOCK_FEAT_RW_NOWAIT))
+				continue;
+			mc.flags |= IORING_MOCK_CREATE_F_SUPPORT_NOWAIT;
+		}
+		if (async) {
+			if (!has_feature(IORING_MOCK_FEAT_RW_ASYNC))
+				continue;
+			mc.rw_delay_ns = 1000 * 1000 * 50;
+		}
+		mc.file_size = 10 * (1UL << 20);
+		if (create_mock_file(&mc))
+			return T_EXIT_FAIL;
+		mock_fd = mc.out_fd;
+
+		ret = test_reads(&ring, mock_fd, buffer);
+		if (ret) {
+			fprintf(stderr, "rw failed %i/%i/%i\n",
+				nowait, async, poll);
+			return T_EXIT_FAIL;
+		}
+
+		close(mock_fd);
+	}
+
+	free(buffer);
 	io_uring_queue_exit(&ring);
 	return 0;
 }
@@ -253,6 +360,12 @@ int main(int argc, char *argv[])
 	ret = test_cmds();
 	if (ret)
 		return T_EXIT_FAIL;
+
+	ret = test_rw();
+	if (ret) {
+		fprintf(stderr, "test_rw failed %i\n", ret);
+		return T_EXIT_FAIL;
+	}
 
 	io_uring_queue_exit(&mgr_ring);
 	close(mgr_fd);
