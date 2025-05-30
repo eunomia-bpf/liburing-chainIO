@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 #include "helpers.h"
 
@@ -59,4 +60,28 @@ int setup_listening_socket(int port, int ipv6)
 	}
 
 	return fd;
+}
+
+void *aligned_alloc(size_t alignment, size_t size)
+{
+	void *ret;
+
+	if (posix_memalign(&ret, alignment, size))
+		return NULL;
+
+	return ret;
+}
+
+void t_error(int status, int errnum, const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+
+	vfprintf(stderr, format, args);
+	if (errnum)
+		fprintf(stderr, ": %s", strerror(errnum));
+
+	fprintf(stderr, "\n");
+	va_end(args);
+	exit(status);
 }

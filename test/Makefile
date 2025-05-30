@@ -81,6 +81,7 @@ test_srcs := \
 	eeed8b54e0df.c \
 	empty-eownerdead.c \
 	eploop.c \
+	epwait.c \
 	eventfd.c \
 	eventfd-disable.c \
 	eventfd-reg.c \
@@ -106,6 +107,7 @@ test_srcs := \
 	fixed-hugepage.c \
 	fixed-link.c \
 	fixed-reuse.c \
+	fixed-seg.c \
 	fpos.c \
 	fsnotify.c \
 	fsync.c \
@@ -121,6 +123,7 @@ test_srcs := \
 	io_uring_passthrough.c \
 	io_uring_register.c \
 	io_uring_setup.c \
+	iowait.c \
 	kallsyms.c \
 	lfs-openat.c \
 	lfs-openat-write.c \
@@ -165,6 +168,7 @@ test_srcs := \
 	pollfree.c \
 	probe.c \
 	read-before-exit.c \
+	read-inc-file.c \
 	read-mshot.c \
 	read-mshot-empty.c \
 	read-mshot-stdin.c \
@@ -193,6 +197,7 @@ test_srcs := \
 	send_recv.c \
 	send_recvmsg.c \
 	send-zerocopy.c \
+	sendmsg_iov_clean.c \
 	shared-wq.c \
 	short-read.c \
 	shutdown.c \
@@ -202,6 +207,7 @@ test_srcs := \
 	socket.c \
 	socket-io-cmd.c \
 	socket-getsetsock-cmd.c \
+	socket-nb.c \
 	socket-rw.c \
 	socket-rw-eagain.c \
 	socket-rw-offset.c \
@@ -237,6 +243,8 @@ test_srcs := \
 	wakeup-hang.c \
 	wq-aff.c \
 	xattr.c \
+	zcrx.c \
+	vec-regbuf.c \
 	# EOL
 
 # Please keep this list sorted alphabetically.

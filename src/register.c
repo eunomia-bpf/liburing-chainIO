@@ -422,6 +422,12 @@ int io_uring_clone_buffers(struct io_uring *dst, struct io_uring *src)
 	return io_uring_clone_buffers_offset(dst, src, 0, 0, 0, 0);
 }
 
+int io_uring_register_ifq(struct io_uring *ring,
+			  struct io_uring_zcrx_ifq_reg *reg)
+{
+	return do_register(ring, IORING_REGISTER_ZCRX_IFQ, reg, 1);
+}
+
 int io_uring_resize_rings(struct io_uring *ring, struct io_uring_params *p)
 {
 	unsigned sq_head, sq_tail;
@@ -468,14 +474,24 @@ out:
 int io_uring_register_wait_reg(struct io_uring *ring,
 			       struct io_uring_reg_wait *reg, int nr)
 {
-	struct io_uring_cqwait_reg_arg arg = {
-		.flags		= 0,
-		.struct_size	= sizeof(*reg),
-		.nr_entries	= nr,
-		.user_addr	= (unsigned long) (uintptr_t) reg,
-	};
+	return -EINVAL;
+}
 
-	return do_register(ring, IORING_REGISTER_CQWAIT_REG, &arg, 1);
+int io_uring_register_region(struct io_uring *ring,
+			     struct io_uring_mem_region_reg *reg)
+{
+	return do_register(ring, IORING_REGISTER_MEM_REGION, reg, 1);
+}
+
+int io_uring_set_iowait(struct io_uring *ring, bool enable_iowait)
+{
+	if (!(ring->features & IORING_FEAT_NO_IOWAIT))
+		return -EOPNOTSUPP;
+	if (enable_iowait)
+		ring->int_flags &= ~INT_FLAG_NO_IOWAIT;
+	else
+		ring->int_flags |= INT_FLAG_NO_IOWAIT;
+	return 0;
 }
 
 int io_uring_register_bpf(struct io_uring *ring, int fd)

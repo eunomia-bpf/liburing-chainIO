@@ -108,7 +108,12 @@ LIBURING_2.9 {
 		io_uring_resize_rings;
 		io_uring_register_wait_reg;
 		io_uring_submit_and_wait_reg;
-		io_uring_free_reg_wait;
-		io_uring_setup_reg_wait;
 		io_uring_clone_buffers_offset;
+		io_uring_register_region;
 } LIBURING_2.8;
+
+LIBURING_2.10 {
+	global:
+		io_uring_register_ifq;
+		io_uring_set_iowait;
+} LIBURING_2.9;

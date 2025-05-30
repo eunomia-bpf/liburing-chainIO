@@ -17,6 +17,7 @@
 #define BS		8192
 #define BUFFERS		(FILE_SIZE / BS)
 
+static void *meta_mem;
 static struct iovec *vecs;
 static int no_pt;
 
@@ -193,6 +194,12 @@ static int __test_io(const char *file, struct io_uring *ring, int tc, int read,
 			cmd->addr = (__u64)(uintptr_t)&vecs[i];
 			cmd->data_len = 1;
 		}
+
+		if (meta_size) {
+			cmd->metadata = (__u64)(uintptr_t)(meta_mem +
+						meta_size * i * (nlb + 1));
+			cmd->metadata_len = meta_size * (nlb + 1);
+		}
 		cmd->nsid = nsid;
 
 		offset += BS;
@@ -254,7 +261,7 @@ err:
 }
 
 static int test_io(const char *file, int tc, int read, int sqthread,
-		   int fixed, int nonvec)
+		   int fixed, int nonvec, int hybrid)
 {
 	struct io_uring ring;
 	int ret, ring_flags = 0;
@@ -264,6 +271,9 @@ static int test_io(const char *file, int tc, int read, int sqthread,
 
 	if (sqthread)
 		ring_flags |= IORING_SETUP_SQPOLL;
+
+	if (hybrid)
+		ring_flags |= IORING_SETUP_IOPOLL | IORING_SETUP_HYBRID_IOPOLL;
 
 	ret = t_create_ring(64, &ring, ring_flags);
 	if (ret == T_SETUP_SKIP)
@@ -401,6 +411,12 @@ static int test_io_uring_submit_enters(const char *file)
 		cmd->addr = (__u64)(uintptr_t)&vecs[i];
 		cmd->data_len = 1;
 		cmd->nsid = nsid;
+
+		if (meta_size) {
+			cmd->metadata = (__u64)(uintptr_t)(meta_mem +
+						meta_size * i * (nlb + 1));
+			cmd->metadata_len = meta_size * (nlb + 1);
+		}
 	}
 
 	/* submit manually to avoid adding IORING_ENTER_GETEVENTS */
@@ -448,19 +464,23 @@ int main(int argc, char *argv[])
 		return T_EXIT_SKIP;
 
 	vecs = t_create_buffers(BUFFERS, BS);
+	if (meta_size)
+		t_posix_memalign(&meta_mem, 0x1000,
+				 meta_size * BUFFERS * (BS >> lba_shift));
 
-	for (i = 0; i < 16; i++) {
+	for (i = 0; i < 32; i++) {
 		int read = (i & 1) != 0;
 		int sqthread = (i & 2) != 0;
 		int fixed = (i & 4) != 0;
 		int nonvec = (i & 8) != 0;
+		int hybrid = (i & 16) != 0;
 
-		ret = test_io(fname, i, read, sqthread, fixed, nonvec);
+		ret = test_io(fname, i, read, sqthread, fixed, nonvec, hybrid);
 		if (no_pt)
 			break;
 		if (ret) {
-			fprintf(stderr, "test_io failed %d/%d/%d/%d\n",
-				read, sqthread, fixed, nonvec);
+			fprintf(stderr, "test_io failed %d/%d/%d/%d/%d\n",
+				read, sqthread, fixed, nonvec, hybrid);
 			goto err;
 		}
 	}
