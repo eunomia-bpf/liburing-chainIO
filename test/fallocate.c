@@ -12,8 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #include "liburing.h"
+#include "helpers.h"
 
 static int no_fallocate;
 
@@ -42,6 +44,7 @@ static int test_fallocate_rlimit(struct io_uring *ring)
 		perror("open");
 		return 1;
 	}
+	unlink(buf);
 
 	sqe = io_uring_get_sqe(ring);
 	if (!sqe) {
@@ -65,17 +68,16 @@ static int test_fallocate_rlimit(struct io_uring *ring)
 	if (cqe->res == -EINVAL) {
 		fprintf(stdout, "Fallocate not supported, skipping\n");
 		no_fallocate = 1;
-		goto out;
+		goto skip;
 	} else if (cqe->res != -EFBIG) {
 		fprintf(stderr, "Expected -EFBIG: %d\n", cqe->res);
 		goto err;
 	}
 	io_uring_cqe_seen(ring, cqe);
-out:
-	unlink(buf);
 	return 0;
+skip:
+	return T_EXIT_SKIP;
 err:
-	unlink(buf);
 	return 1;
 }
 
@@ -93,6 +95,7 @@ static int test_fallocate(struct io_uring *ring)
 		perror("open");
 		return 1;
 	}
+	unlink(buf);
 
 	sqe = io_uring_get_sqe(ring);
 	if (!sqe) {
@@ -116,7 +119,7 @@ static int test_fallocate(struct io_uring *ring)
 	if (cqe->res == -EINVAL) {
 		fprintf(stdout, "Fallocate not supported, skipping\n");
 		no_fallocate = 1;
-		goto out;
+		goto skip;
 	}
 	if (cqe->res) {
 		fprintf(stderr, "cqe->res=%d\n", cqe->res);
@@ -135,11 +138,10 @@ static int test_fallocate(struct io_uring *ring)
 		goto err;
 	}
 
-out:
-	unlink(buf);
 	return 0;
+skip:
+	return T_EXIT_SKIP;
 err:
-	unlink(buf);
 	return 1;
 }
 
@@ -160,6 +162,7 @@ static int test_fallocate_fsync(struct io_uring *ring)
 		perror("open");
 		return 1;
 	}
+	unlink(buf);
 
 	sqe = io_uring_get_sqe(ring);
 	if (!sqe) {
@@ -209,30 +212,38 @@ static int test_fallocate_fsync(struct io_uring *ring)
 		goto err;
 	}
 
-	unlink(buf);
 	return 0;
 err:
-	unlink(buf);
 	return 1;
+}
+
+static void sig_xfsz(int sig)
+{
 }
 
 int main(int argc, char *argv[])
 {
+	struct sigaction act = { };
 	struct io_uring ring;
 	int ret;
 
 	if (argc > 1)
-		return 0;
+		return T_EXIT_SKIP;
+
+	act.sa_handler = sig_xfsz;
+	sigaction(SIGXFSZ, &act, NULL);
 
 	ret = io_uring_queue_init(8, &ring, 0);
 	if (ret) {
 		fprintf(stderr, "ring setup failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
 	ret = test_fallocate(&ring);
 	if (ret) {
-		fprintf(stderr, "test_fallocate failed\n");
+		if (ret != T_EXIT_SKIP) {
+			fprintf(stderr, "test_fallocate failed\n");
+		}
 		return ret;
 	}
 
@@ -244,9 +255,11 @@ int main(int argc, char *argv[])
 
 	ret = test_fallocate_rlimit(&ring);
 	if (ret) {
-		fprintf(stderr, "test_fallocate_rlimit failed\n");
+		if (ret != T_EXIT_SKIP) {
+			fprintf(stderr, "test_fallocate_rlimit failed\n");
+		}
 		return ret;
 	}
 
-	return 0;
+	return T_EXIT_PASS;
 }

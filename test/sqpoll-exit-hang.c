@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * Test that we exit properly with SQPOLL and having a request that
  * adds a circular reference to the ring itself.
@@ -7,33 +8,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include "liburing.h"
-
-static unsigned long long mtime_since(const struct timeval *s,
-				      const struct timeval *e)
-{
-	long long sec, usec;
-
-	sec = e->tv_sec - s->tv_sec;
-	usec = (e->tv_usec - s->tv_usec);
-	if (sec > 0 && usec < 0) {
-		sec--;
-		usec += 1000000;
-	}
-
-	sec *= 1000;
-	usec /= 1000;
-	return sec + usec;
-}
-
-static unsigned long long mtime_since_now(struct timeval *tv)
-{
-	struct timeval end;
-
-	gettimeofday(&end, NULL);
-	return mtime_since(tv, &end);
-}
+#include "helpers.h"
 
 int main(int argc, char *argv[])
 {

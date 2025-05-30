@@ -10,6 +10,7 @@
 #include <fcntl.h>
 
 #include "liburing.h"
+#include "helpers.h"
 
 int main(int argc, char *argv[])
 {
@@ -18,7 +19,7 @@ int main(int argc, char *argv[])
 	int ret;
 
 	if (argc > 1)
-		return 0;
+		return T_EXIT_SKIP;
 
 	memset(&p, 0, sizeof(p));
 	p.flags = IORING_SETUP_CQSIZE;
@@ -31,7 +32,7 @@ int main(int argc, char *argv[])
 			goto done;
 		}
 		printf("ring setup failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
 	if (p.cq_entries < 64) {
@@ -45,14 +46,20 @@ int main(int argc, char *argv[])
 	p.cq_entries = 0;
 
 	ret = io_uring_queue_init_params(4, &ring, &p);
-	if (ret >= 0 || errno != EINVAL) {
+	if (ret >= 0) {
 		printf("zero sized cq ring succeeded\n");
+		io_uring_queue_exit(&ring);
+		goto err;
+	}
+
+	if (ret != -EINVAL) {
+		printf("io_uring_queue_init_params failed, but not with -EINVAL"
+		       ", returned error %d (%s)\n", ret, strerror(-ret));
 		goto err;
 	}
 
 done:
-	return 0;
+	return T_EXIT_PASS;
 err:
-	io_uring_queue_exit(&ring);
-	return 1;
+	return T_EXIT_FAIL;
 }

@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/wait.h>
-#include <sys/poll.h>
+#include <poll.h>
 
 #include "helpers.h"
 #include "liburing.h"
@@ -21,30 +21,6 @@
 #define BUFFERS		(FILE_SIZE / BS)
 
 static struct iovec *vecs;
-
-static unsigned long long utime_since(const struct timeval *s,
-				      const struct timeval *e)
-{
-	long long sec, usec;
-
-	sec = e->tv_sec - s->tv_sec;
-	usec = (e->tv_usec - s->tv_usec);
-	if (sec > 0 && usec < 0) {
-		sec--;
-		usec += 1000000;
-	}
-
-	sec *= 1000000;
-	return sec + usec;
-}
-
-static unsigned long long utime_since_now(struct timeval *tv)
-{
-	struct timeval end;
-
-	gettimeofday(&end, NULL);
-	return utime_since(tv, &end);
-}
 
 static int start_io(struct io_uring *ring, int fd, int do_write)
 {
@@ -93,7 +69,7 @@ static int wait_io(struct io_uring *ring, unsigned nr_io, int do_partial)
 		if (do_partial && cqe->user_data) {
 			if (!(cqe->user_data & 1)) {
 				if (cqe->res != BS) {
-					fprintf(stderr, "IO %d wasn't cancelled but got error %d\n", (unsigned) cqe->user_data, cqe->res);
+					fprintf(stderr, "IO %d wasn't canceled but got error %d\n", (unsigned) cqe->user_data, cqe->res);
 					goto err;
 				}
 			}
@@ -115,7 +91,7 @@ static int do_io(struct io_uring *ring, int fd, int do_write)
 	return 0;
 }
 
-static int start_cancel(struct io_uring *ring, int do_partial)
+static int start_cancel(struct io_uring *ring, int do_partial, int async_cancel)
 {
 	struct io_uring_sqe *sqe;
 	int i, ret, submitted = 0;
@@ -128,7 +104,9 @@ static int start_cancel(struct io_uring *ring, int do_partial)
 			fprintf(stderr, "sqe get failed\n");
 			goto err;
 		}
-		io_uring_prep_cancel(sqe, (void *) (unsigned long) i + 1, 0);
+		io_uring_prep_cancel64(sqe, i + 1, 0);
+		if (async_cancel)
+			sqe->flags |= IOSQE_ASYNC;
 		sqe->user_data = 0;
 		submitted++;
 	}
@@ -145,10 +123,11 @@ err:
 
 /*
  * Test cancels. If 'do_partial' is set, then we only attempt to cancel half of
- * the submitted IO. This is done to verify that cancelling one piece of IO doesn't
+ * the submitted IO. This is done to verify that canceling one piece of IO doesn't
  * impact others.
  */
-static int test_io_cancel(const char *file, int do_write, int do_partial)
+static int test_io_cancel(const char *file, int do_write, int do_partial,
+			  int async_cancel)
 {
 	struct io_uring ring;
 	struct timeval start_tv;
@@ -158,6 +137,8 @@ static int test_io_cancel(const char *file, int do_write, int do_partial)
 
 	fd = open(file, O_RDWR | O_DIRECT);
 	if (fd < 0) {
+		if (errno == EINVAL)
+			return T_EXIT_SKIP;
 		perror("file open");
 		goto err;
 	}
@@ -179,7 +160,7 @@ static int test_io_cancel(const char *file, int do_write, int do_partial)
 		goto err;
 	/* sleep for 1/3 of the total time, to allow some to start/complete */
 	usleep(usecs / 3);
-	if (start_cancel(&ring, do_partial))
+	if (start_cancel(&ring, do_partial, async_cancel))
 		goto err;
 	to_wait = BUFFERS;
 	if (do_partial)
@@ -243,7 +224,7 @@ static int test_dont_cancel_another_ring(void)
 		fprintf(stderr, "%s: failed to get sqe\n", __FUNCTION__);
 		return 1;
 	}
-	io_uring_prep_cancel(sqe, (void *) (unsigned long)1, 0);
+	io_uring_prep_cancel64(sqe, 1, 0);
 	sqe->user_data = 2;
 
 	ret = io_uring_submit(&ring2);
@@ -266,7 +247,7 @@ static int test_dont_cancel_another_ring(void)
 
 	ret = io_uring_wait_cqe_timeout(&ring1, &cqe, &ts);
 	if (ret != -ETIME) {
-		fprintf(stderr, "read got cancelled or wait failed\n");
+		fprintf(stderr, "read got canceled or wait failed\n");
 		return 1;
 	}
 	io_uring_cqe_seen(&ring1, cqe);
@@ -323,7 +304,7 @@ static int test_cancel_req_across_fork(void)
 			fprintf(stderr, "%s: failed to get sqe\n", __FUNCTION__);
 			return 1;
 		}
-		io_uring_prep_cancel(sqe, (void *) (unsigned long)1, 0);
+		io_uring_prep_cancel64(sqe, 1, 0);
 		sqe->user_data = 2;
 
 		ret = io_uring_submit(&ring);
@@ -338,9 +319,25 @@ static int test_cancel_req_across_fork(void)
 				fprintf(stderr, "wait_cqe=%d\n", ret);
 				return 1;
 			}
-			if ((cqe->user_data == 1 && cqe->res != -EINTR) ||
-			    (cqe->user_data == 2 && cqe->res != -EALREADY)) {
-				fprintf(stderr, "%i %i\n", (int)cqe->user_data, cqe->res);
+			switch (cqe->user_data) {
+			case 1:
+				if (cqe->res != -EINTR &&
+				    cqe->res != -ECANCELED) {
+					fprintf(stderr, "user_data %i res %i\n",
+						(unsigned)cqe->user_data, cqe->res);
+					exit(1);
+				}
+				break;
+			case 2:
+				if (cqe->res != -EALREADY && cqe->res) {
+					fprintf(stderr, "user_data %i res %i\n",
+						(unsigned)cqe->user_data, cqe->res);
+					exit(1);
+				}
+				break;
+			default:
+				fprintf(stderr, "user_data %i res %i\n",
+					(unsigned)cqe->user_data, cqe->res);
 				exit(1);
 			}
 
@@ -349,8 +346,13 @@ static int test_cancel_req_across_fork(void)
 		exit(0);
 	} else {
 		int wstatus;
+		pid_t childpid;
 
-		if (waitpid(p, &wstatus, 0) == (pid_t)-1) {
+		do {
+			childpid = waitpid(p, &wstatus, 0);
+		} while (childpid == (pid_t)-1 && errno == EINTR);
+
+		if (childpid == (pid_t)-1) {
 			perror("waitpid()");
 			return 1;
 		}
@@ -428,7 +430,8 @@ static int test_cancel_inflight_exit(void)
 		if ((cqe->user_data == 1 && cqe->res != -ECANCELED) ||
 		    (cqe->user_data == 2 && cqe->res != -ECANCELED) ||
 		    (cqe->user_data == 3 && cqe->res != -ETIME)) {
-			fprintf(stderr, "%i %i\n", (int)cqe->user_data, cqe->res);
+			fprintf(stderr, "user_data %i res %i\n",
+				(unsigned)cqe->user_data, cqe->res);
 			return 1;
 		}
 		io_uring_cqe_seen(&ring, cqe);
@@ -474,7 +477,7 @@ static int test_sqpoll_cancel_iowq_requests(void)
 	sleep(1);
 	io_uring_queue_exit(&ring);
 
-	/* close the write end, so if ring is cancelled properly read() fails*/
+	/* close the write end, so if ring is canceled properly read() fails*/
 	close(fds[1]);
 	ret = read(fds[0], buffer, 10);
 	close(fds[0]);
@@ -483,49 +486,52 @@ static int test_sqpoll_cancel_iowq_requests(void)
 
 int main(int argc, char *argv[])
 {
+	const char *fname = ".io-cancel-test";
 	int i, ret;
 
 	if (argc > 1)
-		return 0;
+		return T_EXIT_SKIP;
 
 	if (test_dont_cancel_another_ring()) {
 		fprintf(stderr, "test_dont_cancel_another_ring() failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
 	if (test_cancel_req_across_fork()) {
 		fprintf(stderr, "test_cancel_req_across_fork() failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
 	if (test_cancel_inflight_exit()) {
 		fprintf(stderr, "test_cancel_inflight_exit() failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
 	if (test_sqpoll_cancel_iowq_requests()) {
 		fprintf(stderr, "test_sqpoll_cancel_iowq_requests() failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
-	t_create_file(".basic-rw", FILE_SIZE);
+	t_create_file(fname, FILE_SIZE);
 
 	vecs = t_create_buffers(BUFFERS, BS);
 
-	for (i = 0; i < 4; i++) {
-		int v1 = (i & 1) != 0;
-		int v2 = (i & 2) != 0;
+	for (i = 0; i < 8; i++) {
+		int write = (i & 1) != 0;
+		int partial = (i & 2) != 0;
+		int async = (i & 4) != 0;
 
-		ret = test_io_cancel(".basic-rw", v1, v2);
-		if (ret) {
-			fprintf(stderr, "test_io_cancel %d %d failed\n", v1, v2);
+		ret = test_io_cancel(fname, write, partial, async);
+		if (ret == T_EXIT_FAIL) {
+			fprintf(stderr, "test_io_cancel %d %d %d failed\n",
+				write, partial, async);
 			goto err;
 		}
 	}
 
-	unlink(".basic-rw");
-	return 0;
+	unlink(fname);
+	return T_EXIT_PASS;
 err:
-	unlink(".basic-rw");
-	return 1;
+	unlink(fname);
+	return T_EXIT_FAIL;
 }

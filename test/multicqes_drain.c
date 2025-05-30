@@ -14,9 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <sys/poll.h>
+#include <poll.h>
 
 #include "liburing.h"
+#include "helpers.h"
 
 enum {
 	multi,
@@ -37,16 +38,20 @@ struct sqe_info {
  * sqe_flags: combination of sqe flags
  * multi_sqes: record the user_data/index of all the multishot sqes
  * cnt: how many entries there are in multi_sqes
- * we can leverage multi_sqes array for cancellation: we randomly pick
- * up an entry in multi_sqes when form a cancellation sqe.
+ * we can leverage multi_sqes array for cancelation: we randomly pick
+ * up an entry in multi_sqes when form a cancelation sqe.
  * multi_cap: limitation of number of multishot sqes
  */
-const unsigned sqe_flags[4] = {0, IOSQE_IO_LINK, IOSQE_IO_DRAIN,
-	IOSQE_IO_LINK | IOSQE_IO_DRAIN};
-int multi_sqes[max_entry], cnt = 0;
-int multi_cap = max_entry / 5;
+static const unsigned sqe_flags[4] = {
+	0,
+	IOSQE_IO_LINK,
+	IOSQE_IO_DRAIN,
+	IOSQE_IO_LINK | IOSQE_IO_DRAIN
+};
+static int multi_sqes[max_entry], cnt = 0;
+static int multi_cap = max_entry / 5;
 
-int write_pipe(int pipe, char *str)
+static int write_pipe(int pipe, char *str)
 {
 	int ret;
 	do {
@@ -56,7 +61,7 @@ int write_pipe(int pipe, char *str)
 	return ret;
 }
 
-void read_pipe(int pipe)
+static void read_pipe(int pipe)
 {
 	char str[4] = {0};
 	int ret;
@@ -66,18 +71,21 @@ void read_pipe(int pipe)
 		perror("read");
 }
 
-int trigger_event(int p[])
+static int trigger_event(struct io_uring *ring, int p[])
 {
 	int ret;
 	if ((ret = write_pipe(p[1], "foo")) != 3) {
 		fprintf(stderr, "bad write return %d\n", ret);
 		return 1;
 	}
+	usleep(1000);
+	io_uring_get_events(ring);
 	read_pipe(p[0]);
 	return 0;
 }
 
-void io_uring_sqe_prep(int op, struct io_uring_sqe *sqe, unsigned sqe_flags, int arg)
+static void io_uring_sqe_prep(int op, struct io_uring_sqe *sqe,
+			      unsigned sqe_flags, int arg)
 {
 	switch (op) {
 		case multi:
@@ -91,17 +99,17 @@ void io_uring_sqe_prep(int op, struct io_uring_sqe *sqe, unsigned sqe_flags, int
 			io_uring_prep_nop(sqe);
 			break;
 		case cancel:
-			io_uring_prep_poll_remove(sqe, (void *)(long)arg);
+			io_uring_prep_poll_remove(sqe, arg);
 			break;
 	}
 	sqe->flags = sqe_flags;
 }
 
-__u8 generate_flags(int sqe_op)
+static __u8 generate_flags(int sqe_op)
 {
 	__u8 flags = 0;
 	/*
-	 * drain sqe must be put after multishot sqes cancelled
+	 * drain sqe must be put after multishot sqes canceled
 	 */
 	do {
 		flags = sqe_flags[rand() % 4];
@@ -116,7 +124,7 @@ __u8 generate_flags(int sqe_op)
 	/*
 	 * avoid below case:
 	 * sqe0(multishot, link)->sqe1(nop, link)->sqe2(nop)->sqe3(cancel_sqe0)
-	 * sqe3 may excute before sqe0 so that sqe0 isn't cancelled
+	 * sqe3 may execute before sqe0 so that sqe0 isn't canceled
 	 */
 	if (sqe_op == multi)
 		flags &= ~IOSQE_IO_LINK;
@@ -135,7 +143,7 @@ __u8 generate_flags(int sqe_op)
  * - ensure number of multishot sqes doesn't exceed multi_cap
  * - don't generate multishot sqes after high watermark
  */
-int generate_opcode(int i, int pre_flags)
+static int generate_opcode(int i, int pre_flags)
 {
 	int sqe_op;
 	int high_watermark = max_entry - max_entry / 5;
@@ -157,12 +165,12 @@ int generate_opcode(int i, int pre_flags)
 	return sqe_op;
 }
 
-inline void add_multishot_sqe(int index)
+static inline void add_multishot_sqe(int index)
 {
 	multi_sqes[cnt++] = index;
 }
 
-int remove_multishot_sqe()
+static int remove_multishot_sqe(void)
 {
 	int ret;
 
@@ -224,16 +232,16 @@ static int test_generic_drain(struct io_uring *ring)
 		goto err;
 	}
 
-	sleep(4);
-	// TODO: randomize event triggerring order
+	sleep(1);
+	// TODO: randomize event triggering order
 	for (i = 0; i < max_entry; i++) {
 		if (si[i].op != multi && si[i].op != single)
 			continue;
 
-		if (trigger_event(pipes[i]))
+		if (trigger_event(ring, pipes[i]))
 			goto err;
 	}
-	sleep(5);
+	sleep(1);
 	i = 0;
 	while (!io_uring_peek_cqe(ring, &cqe)) {
 		cqe_data[i] = cqe->user_data;
@@ -245,7 +253,7 @@ static int test_generic_drain(struct io_uring *ring)
 	 * compl_bits is a bit map to record completions.
 	 * eg. sqe[0], sqe[1], sqe[2] fully completed
 	 * then compl_bits is 000...00111b
-	 * 
+	 *
 	 */
 	unsigned long long compl_bits = 0;
 	for (j = 0; j < i; j++) {
@@ -257,7 +265,7 @@ static int test_generic_drain(struct io_uring *ring)
 			}
 		}
 		/*
-		 * for multishot sqes, record them only when it is cancelled
+		 * for multishot sqes, record them only when it is canceled
 		 */
 		if ((si[index].op != multi) || (cqe_res[j] == -ECANCELED))
 			compl_bits |= (1ULL << index);
@@ -288,13 +296,18 @@ static int test_simple_drain(struct io_uring *ring)
 		}
 	}
 
-	io_uring_prep_poll_add(sqe[0], pipe1[0], POLLIN);
-	sqe[0]->len |= IORING_POLL_ADD_MULTI;
+	io_uring_prep_poll_multishot(sqe[0], pipe1[0], POLLIN);
 	sqe[0]->user_data = 0;
+
 	io_uring_prep_poll_add(sqe[1], pipe2[0], POLLIN);
 	sqe[1]->user_data = 1;
 
-	ret = io_uring_submit(ring);
+	/* This test relies on multishot poll to trigger events continually.
+	 * however with IORING_SETUP_DEFER_TASKRUN this will only happen when
+	 * triggered with a get_events. Hence we sprinkle get_events whenever
+	 * there might be work to process in order to get the same result
+	 */
+	ret = io_uring_submit_and_get_events(ring);
 	if (ret < 0) {
 		printf("sqe submit failed\n");
 		goto err;
@@ -304,11 +317,11 @@ static int test_simple_drain(struct io_uring *ring)
 	}
 
 	for (i = 0; i < 2; i++) {
-		if (trigger_event(pipe1))
+		if (trigger_event(ring, pipe1))
 			goto err;
 	}
-	if (trigger_event(pipe2))
-			goto err;
+	if (trigger_event(ring, pipe2))
+		goto err;
 
 	for (i = 0; i < 2; i++) {
 		sqe[i] = io_uring_get_sqe(ring);
@@ -320,6 +333,7 @@ static int test_simple_drain(struct io_uring *ring)
 
 	io_uring_prep_poll_remove(sqe[0], 0);
 	sqe[0]->user_data = 2;
+
 	io_uring_prep_nop(sqe[1]);
 	sqe[1]->flags |= IOSQE_IO_DRAIN;
 	sqe[1]->user_data = 3;
@@ -333,42 +347,47 @@ static int test_simple_drain(struct io_uring *ring)
 		goto err;
 	}
 
-
 	for (i = 0; i < 6; i++) {
 		ret = io_uring_wait_cqe(ring, &cqe);
 		if (ret < 0) {
 			printf("wait completion %d\n", ret);
 			goto err;
 		}
-		io_uring_cqe_seen(ring, cqe);
 		if ((i == 5) && (cqe->user_data != 3))
 			goto err;
+		io_uring_cqe_seen(ring, cqe);
 	}
 
+	close(pipe1[0]);
+	close(pipe1[1]);
+	close(pipe2[0]);
+	close(pipe2[1]);
 	return 0;
 err:
 	return 1;
 }
 
-int main(int argc, char *argv[])
+static int test(bool defer_taskrun)
 {
 	struct io_uring ring;
 	int i, ret;
+	unsigned int flags = 0;
 
-	if (argc > 1)
-		return 0;
+	if (defer_taskrun)
+		flags = IORING_SETUP_SINGLE_ISSUER |
+			IORING_SETUP_DEFER_TASKRUN;
 
-	ret = io_uring_queue_init(1024, &ring, 0);
+	ret = io_uring_queue_init(1024, &ring, flags);
 	if (ret) {
 		printf("ring setup failed\n");
-		return 1;
+		return T_EXIT_FAIL;
 	}
 
 	for (i = 0; i < 5; i++) {
 		ret = test_simple_drain(&ring);
 		if (ret) {
 			fprintf(stderr, "test_simple_drain failed\n");
-			break;
+			return T_EXIT_FAIL;
 		}
 	}
 
@@ -376,8 +395,35 @@ int main(int argc, char *argv[])
 		ret = test_generic_drain(&ring);
 		if (ret) {
 			fprintf(stderr, "test_generic_drain failed\n");
-			break;
+			return T_EXIT_FAIL;
 		}
 	}
+
+	io_uring_queue_exit(&ring);
+
+	return T_EXIT_PASS;
+}
+
+int main(int argc, char *argv[])
+{
+	int ret;
+
+	if (argc > 1)
+		return T_EXIT_SKIP;
+
+	ret = test(false);
+	if (ret != T_EXIT_PASS) {
+		fprintf(stderr, "%s: test(false) failed\n", argv[0]);
+		return ret;
+	}
+
+	if (t_probe_defer_taskrun()) {
+		ret = test(true);
+		if (ret != T_EXIT_PASS) {
+			fprintf(stderr, "%s: test(true) failed\n", argv[0]);
+			return ret;
+		}
+	}
+
 	return ret;
 }

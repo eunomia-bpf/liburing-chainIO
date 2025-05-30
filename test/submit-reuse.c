@@ -26,13 +26,11 @@ struct thread_data {
 static void *flusher(void *__data)
 {
 	struct thread_data *data = __data;
-	int i = 0;
 
 	while (!data->do_exit) {
 		posix_fadvise(data->fd1, 0, FILE_SIZE, POSIX_FADV_DONTNEED);
 		posix_fadvise(data->fd2, 0, FILE_SIZE, POSIX_FADV_DONTNEED);
 		usleep(10);
-		i++;
 	}
 
 	return NULL;
@@ -104,31 +102,6 @@ static int wait_nr(int nr)
 	return 0;
 }
 
-static unsigned long long mtime_since(const struct timeval *s,
-				      const struct timeval *e)
-{
-	long long sec, usec;
-
-	sec = e->tv_sec - s->tv_sec;
-	usec = (e->tv_usec - s->tv_usec);
-	if (sec > 0 && usec < 0) {
-		sec--;
-		usec += 1000000;
-	}
-
-	sec *= 1000;
-	usec /= 1000;
-	return sec + usec;
-}
-
-static unsigned long long mtime_since_now(struct timeval *tv)
-{
-	struct timeval end;
-
-	gettimeofday(&end, NULL);
-	return mtime_since(tv, &end);
-}
-
 static int test_reuse(int argc, char *argv[], int split, int async)
 {
 	struct thread_data data;
@@ -140,11 +113,6 @@ static int test_reuse(int argc, char *argv[], int split, int async)
 	int do_unlink = 1;
 	void *tret;
 
-	if (argc > 1) {
-		fname1 = argv[1];
-		do_unlink = 0;
-	}
-
 	ret = io_uring_queue_init_params(32, &ring, &p);
 	if (ret) {
 		fprintf(stderr, "io_uring_queue_init: %d\n", ret);
@@ -153,21 +121,31 @@ static int test_reuse(int argc, char *argv[], int split, int async)
 
 	if (!(p.features & IORING_FEAT_SUBMIT_STABLE)) {
 		fprintf(stdout, "FEAT_SUBMIT_STABLE not there, skipping\n");
+		io_uring_queue_exit(&ring);
 		no_stable = 1;
 		return 0;
 	}
 
-	if (do_unlink)
+	if (argc > 1) {
+		fname1 = argv[1];
+		do_unlink = 0;
+	} else {
 		t_create_file(fname1, FILE_SIZE);
-
-	t_create_file(".reuse.2", FILE_SIZE);
+	}
 
 	fd1 = open(fname1, O_RDONLY);
+	if (do_unlink)
+		unlink(fname1);
 	if (fd1 < 0) {
+		if (errno == EPERM || errno == EACCES)
+			return T_EXIT_SKIP;
 		perror("open fname1");
 		goto err;
 	}
+
+	t_create_file(".reuse.2", FILE_SIZE);
 	fd2 = open(".reuse.2", O_RDONLY);
+	unlink(".reuse.2");
 	if (fd2 < 0) {
 		perror("open .reuse.2");
 		goto err;
@@ -206,17 +184,10 @@ static int test_reuse(int argc, char *argv[], int split, int async)
 	close(fd2);
 	close(fd1);
 	io_uring_queue_exit(&ring);
-	if (do_unlink)
-		unlink(fname1);
-	unlink(".reuse.2");
 	return 0;
 err:
 	io_uring_queue_exit(&ring);
-	if (do_unlink)
-		unlink(fname1);
-	unlink(".reuse.2");
 	return 1;
-
 }
 
 int main(int argc, char *argv[])
@@ -230,6 +201,8 @@ int main(int argc, char *argv[])
 		async = (i & 2) != 0;
 
 		ret = test_reuse(argc, argv, split, async);
+		if (ret == T_EXIT_SKIP)
+			continue;
 		if (ret) {
 			fprintf(stderr, "test_reuse %d %d failed\n", split, async);
 			return ret;

@@ -9,7 +9,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/types.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/resource.h>
 
@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
 	if (argc > 1) {
 		fname = argv[1];
 	} else {
-		fname = ".basic-rw";
+		fname = ".basic-rw-poll-share";
 		t_create_file(fname, FILE_SIZE);
 	}
 
@@ -90,9 +90,14 @@ int main(int argc, char *argv[])
 
 	fd = open(fname, O_RDONLY | O_DIRECT);
 	if (fd < 0) {
+		if (errno == EPERM || errno == EACCES || errno == EINVAL)
+			return T_EXIT_SKIP;
 		perror("open");
 		return -1;
 	}
+
+	if (fname != argv[1])
+		unlink(fname);
 
 	for (i = 0; i < NR_RINGS; i++) {
 		struct io_uring_params p = { };
@@ -129,11 +134,7 @@ int main(int argc, char *argv[])
 		ios += BUFFERS;
 	}
 
-	if (fname != argv[1])
-		unlink(fname);
 	return 0;
 err:
-	if (fname != argv[1])
-		unlink(fname);
 	return 1;
 }

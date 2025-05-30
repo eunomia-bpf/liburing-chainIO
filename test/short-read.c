@@ -6,7 +6,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/types.h>
-#include <sys/poll.h>
+#include <poll.h>
 
 
 #include "helpers.h"
@@ -71,5 +71,6 @@ int main(int argc, char *argv[])
 	}
 
 	io_uring_cqe_seen(&ring, cqe);
+	free(vec.iov_base);
 	return 0;
 }

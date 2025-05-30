@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -190,7 +191,7 @@ static int do_splice(struct io_uring *ring,
 			    IORING_OP_SPLICE);
 }
 
-static int do_tee(struct io_uring *ring, int fd_in, int fd_out, 
+static int do_tee(struct io_uring *ring, int fd_in, int fd_out,
 		  unsigned int len)
 {
 	return do_splice_op(ring, fd_in, 0, fd_out, 0, len, IORING_OP_TEE);
@@ -503,6 +504,8 @@ int main(int argc, char *argv[])
 	splice_flags = SPLICE_F_FD_IN_FIXED;
 	sqe_flags = IOSQE_FIXED_FILE;
 	ret = test_splice(&ring, &ctx);
+	free(ctx.buf_in);
+	free(ctx.buf_out);
 	if (ret) {
 		fprintf(stderr, "registered fds splice tests failed\n");
 		return ret;

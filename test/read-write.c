@@ -9,20 +9,22 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/types.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/resource.h>
 
 #include "helpers.h"
 #include "liburing.h"
+#include "../src/syscall.h"
 
-#define FILE_SIZE	(128 * 1024)
-#define BS		4096
+#define FILE_SIZE	(256 * 1024)
+#define BS		8192
 #define BUFFERS		(FILE_SIZE / BS)
 
 static struct iovec *vecs;
 static int no_read;
 static int no_buf_select;
+static int no_buf_copy;
 static int warned;
 
 static int create_nonaligned_buffers(void)
@@ -42,14 +44,14 @@ static int create_nonaligned_buffers(void)
 	return 0;
 }
 
-static int __test_io(const char *file, struct io_uring *ring, int write,
-		     int buffered, int sqthread, int fixed, int nonvec,
-		     int buf_select, int seq, int exp_len)
+static int _test_io(const char *file, struct io_uring *ring, int write,
+		    int buffered, int sqthread, int fixed, int nonvec,
+		    int buf_select, int seq, int exp_len)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
 	int open_flags;
-	int i, fd, ret;
+	int i, fd = -1, ret;
 	off_t offset;
 
 #ifdef VERBOSE
@@ -57,13 +59,6 @@ static int __test_io(const char *file, struct io_uring *ring, int write,
 							buffered, sqthread,
 							fixed, nonvec);
 #endif
-	if (sqthread && geteuid()) {
-#ifdef VERBOSE
-		fprintf(stdout, "SKIPPED (not root)\n");
-#endif
-		return 0;
-	}
-
 	if (write)
 		open_flags = O_WRONLY;
 	else
@@ -71,19 +66,24 @@ static int __test_io(const char *file, struct io_uring *ring, int write,
 	if (!buffered)
 		open_flags |= O_DIRECT;
 
-	fd = open(file, open_flags);
-	if (fd < 0) {
-		perror("file open");
-		goto err;
-	}
-
-	if (fixed) {
-		ret = io_uring_register_buffers(ring, vecs, BUFFERS);
-		if (ret) {
+	if (fixed == 1) {
+		ret = t_register_buffers(ring, vecs, BUFFERS);
+		if (ret == T_SETUP_SKIP)
+			return 0;
+		if (ret != T_SETUP_OK) {
 			fprintf(stderr, "buffer reg failed: %d\n", ret);
 			goto err;
 		}
 	}
+
+	fd = open(file, open_flags);
+	if (fd < 0) {
+		if (errno == EINVAL || errno == EPERM || errno == EACCES)
+			return 0;
+		perror("file open");
+		goto err;
+	}
+
 	if (sqthread) {
 		ret = io_uring_register_files(ring, &fd, 1);
 		if (ret) {
@@ -203,13 +203,6 @@ static int __test_io(const char *file, struct io_uring *ring, int write,
 		io_uring_cqe_seen(ring, cqe);
 	}
 
-	if (fixed) {
-		ret = io_uring_unregister_buffers(ring);
-		if (ret) {
-			fprintf(stderr, "buffer unreg failed: %d\n", ret);
-			goto err;
-		}
-	}
 	if (sqthread) {
 		ret = io_uring_unregister_files(ring);
 		if (ret) {
@@ -231,34 +224,84 @@ err:
 		close(fd);
 	return 1;
 }
+
+static int __test_io(const char *file, struct io_uring *ring, int write,
+		     int buffered, int sqthread, int fixed, int nonvec,
+		     int buf_select, int seq, int exp_len)
+{
+	int ret;
+
+	ret = _test_io(file, ring, write, buffered, sqthread, fixed, nonvec,
+		       buf_select, seq, exp_len);
+	if (ret)
+		return ret;
+
+	if (fixed) {
+		struct io_uring ring2;
+		int ring_flags = 0;
+
+		if (no_buf_copy)
+			return 0;
+		if (sqthread)
+			ring_flags = IORING_SETUP_SQPOLL;
+		ret = t_create_ring(64, &ring2, ring_flags);
+		if (ret == T_SETUP_SKIP)
+			return 0;
+		if (ret != T_SETUP_OK) {
+			fprintf(stderr, "ring create failed: %d\n", ret);
+			return 1;
+		}
+
+		ret = io_uring_clone_buffers(&ring2, ring);
+		if (ret) {
+			if (ret == -EINVAL) {
+				no_buf_copy = 1;
+				io_uring_queue_exit(&ring2);
+				return 0;
+			}
+			fprintf(stderr, "copy buffers: %d\n", ret);
+			return ret;
+		}
+		ret = _test_io(file, &ring2, write, buffered, sqthread, 2,
+			       nonvec, buf_select, seq, exp_len);
+		if (ret)
+			return ret;
+
+		ret = io_uring_unregister_buffers(ring);
+		if (ret) {
+			fprintf(stderr, "buffer unreg failed: %d\n", ret);
+			return ret;
+		}
+		ret = io_uring_unregister_buffers(&ring2);
+		if (ret) {
+			fprintf(stderr, "buffer copy unreg failed: %d\n", ret);
+			return ret;
+		}
+		io_uring_queue_exit(&ring2);
+	}
+
+	return ret;
+}
+
 static int test_io(const char *file, int write, int buffered, int sqthread,
 		   int fixed, int nonvec, int exp_len)
 {
 	struct io_uring ring;
-	int ret, ring_flags;
+	int ret, ring_flags = 0;
 
-	if (sqthread) {
-		if (geteuid()) {
-			if (!warned) {
-				fprintf(stderr, "SQPOLL requires root, skipping\n");
-				warned = 1;
-			}
-			return 0;
-		}
+	if (sqthread)
 		ring_flags = IORING_SETUP_SQPOLL;
-	} else {
-		ring_flags = 0;
-	}
 
-	ret = io_uring_queue_init(64, &ring, ring_flags);
-	if (ret) {
+	ret = t_create_ring(64, &ring, ring_flags);
+	if (ret == T_SETUP_SKIP)
+		return 0;
+	if (ret != T_SETUP_OK) {
 		fprintf(stderr, "ring create failed: %d\n", ret);
 		return 1;
 	}
 
 	ret = __test_io(file, &ring, write, buffered, sqthread, fixed, nonvec,
 			0, 0, exp_len);
-
 	io_uring_queue_exit(&ring);
 	return ret;
 }
@@ -277,6 +320,8 @@ static int read_poll_link(const char *file)
 
 	fd = open(file, O_WRONLY);
 	if (fd < 0) {
+		if (errno == EACCES || errno == EPERM)
+			return T_EXIT_SKIP;
 		perror("open");
 		return 1;
 	}
@@ -349,6 +394,7 @@ out:
 	if (!(p->ops[IORING_OP_READ].flags & IO_URING_OP_SUPPORTED))
 		goto out;
 	io_uring_queue_exit(&ring);
+	free(p);
 	return 1;
 }
 
@@ -475,6 +521,79 @@ static int provide_buffers_iovec(struct io_uring *ring, int bgid)
 	return 0;
 }
 
+static int test_buf_select_pipe(void)
+{
+	struct io_uring_sqe *sqe;
+	struct io_uring_cqe *cqe;
+	struct io_uring ring;
+	int ret, i;
+	int fds[2];
+
+	if (no_buf_select)
+		return 0;
+
+	ret = io_uring_queue_init(64, &ring, 0);
+	if (ret) {
+		fprintf(stderr, "ring create failed: %d\n", ret);
+		return 1;
+	}
+
+	ret = provide_buffers_iovec(&ring, 0);
+	if (ret) {
+		fprintf(stderr, "provide buffers failed: %d\n", ret);
+		return 1;
+	}
+
+	ret = pipe(fds);
+	if (ret) {
+		fprintf(stderr, "pipe failed: %d\n", ret);
+		return 1;
+	}
+
+	for (i = 0; i < 5; i++) {
+		sqe = io_uring_get_sqe(&ring);
+		io_uring_prep_read(sqe, fds[0], NULL, 1 /* max read 1 per go */, -1);
+		sqe->flags |= IOSQE_BUFFER_SELECT;
+		sqe->buf_group = 0;
+	}
+	io_uring_submit(&ring);
+
+	ret = write(fds[1], "01234", 5);
+	if (ret != 5) {
+		fprintf(stderr, "pipe write failed %d\n", ret);
+		return 1;
+	}
+
+	for (i = 0; i < 5; i++) {
+		const char *buff;
+
+		if (io_uring_wait_cqe(&ring, &cqe)) {
+			fprintf(stderr, "bad wait %d\n", i);
+			return 1;
+		}
+		if (cqe->res != 1) {
+			fprintf(stderr, "expected read %d\n", cqe->res);
+			return 1;
+		}
+		if (!(cqe->flags & IORING_CQE_F_BUFFER)) {
+			fprintf(stderr, "no buffer %d\n", cqe->res);
+			return 1;
+		}
+		buff = vecs[cqe->flags >> 16].iov_base;
+		if (*buff != '0' + i) {
+			fprintf(stderr, "%d: expected %c, got %c\n", i, '0' + i, *buff);
+			return 1;
+		}
+		io_uring_cqe_seen(&ring, cqe);
+	}
+
+
+	close(fds[0]);
+	close(fds[1]);
+	io_uring_queue_exit(&ring);
+	return 0;
+}
+
 static int test_buf_select(const char *filename, int nonvec)
 {
 	struct io_uring_probe *p;
@@ -493,7 +612,7 @@ static int test_buf_select(const char *filename, int nonvec)
 		fprintf(stdout, "Buffer select not supported, skipping\n");
 		return 0;
 	}
-	free(p);
+	io_uring_free_probe(p);
 
 	/*
 	 * Write out data with known pattern
@@ -575,6 +694,53 @@ static int test_rem_buf(int batch, int sqe_flags)
 	return ret;
 }
 
+static int test_rem_buf_single(int to_rem)
+{
+	struct io_uring_sqe *sqe;
+	struct io_uring_cqe *cqe;
+	struct io_uring ring;
+	int ret, expected;
+	int bgid = 1;
+
+	if (no_buf_select)
+		return 0;
+
+	ret = io_uring_queue_init(64, &ring, 0);
+	if (ret) {
+		fprintf(stderr, "ring create failed: %d\n", ret);
+		return 1;
+	}
+
+	ret = provide_buffers_iovec(&ring, bgid);
+	if (ret)
+		return ret;
+
+	expected = (to_rem > BUFFERS) ? BUFFERS : to_rem;
+
+	sqe = io_uring_get_sqe(&ring);
+	io_uring_prep_remove_buffers(sqe, to_rem, bgid);
+
+	ret = io_uring_submit(&ring);
+	if (ret != 1) {
+		fprintf(stderr, "submit: %d\n", ret);
+		return -1;
+	}
+
+	ret = io_uring_wait_cqe(&ring, &cqe);
+	if (ret) {
+		fprintf(stderr, "wait_cqe=%d\n", ret);
+		return 1;
+	}
+	if (cqe->res != expected) {
+		fprintf(stderr, "cqe->res=%d, expected=%d\n", cqe->res, expected);
+		return 1;
+	}
+	io_uring_cqe_seen(&ring, cqe);
+
+	io_uring_queue_exit(&ring);
+	return ret;
+}
+
 static int test_io_link(const char *file)
 {
 	const int nr_links = 100;
@@ -587,6 +753,8 @@ static int test_io_link(const char *file)
 
 	fd = open(file, O_WRONLY);
 	if (fd < 0) {
+		if (errno == EPERM || errno == EACCES)
+			return 0;
 		perror("file open");
 		goto err;
 	}
@@ -671,8 +839,8 @@ static int test_write_efbig(void)
 		return 1;
 	}
 	rlim = old_rlim;
-	rlim.rlim_cur = 64 * 1024;
-	rlim.rlim_max = 64 * 1024;
+	rlim.rlim_cur = 128 * 1024;
+	rlim.rlim_max = 128 * 1024;
 	if (setrlimit(RLIMIT_FSIZE, &rlim) < 0) {
 		perror("setrlimit");
 		return 1;
@@ -683,6 +851,7 @@ static int test_write_efbig(void)
 		perror("file open");
 		goto err;
 	}
+	unlink(".efbig");
 
 	ret = io_uring_queue_init(32, &ring, 0);
 	if (ret) {
@@ -698,6 +867,7 @@ static int test_write_efbig(void)
 			goto err;
 		}
 		io_uring_prep_writev(sqe, fd, &vecs[i], 1, off);
+		io_uring_sqe_set_data64(sqe, i);
 		off += BS;
 	}
 
@@ -713,7 +883,7 @@ static int test_write_efbig(void)
 			fprintf(stderr, "wait_cqe=%d\n", ret);
 			goto err;
 		}
-		if (i < 16) {
+		if (cqe->user_data < 16) {
 			if (cqe->res != BS) {
 				fprintf(stderr, "bad write: %d\n", cqe->res);
 				goto err;
@@ -739,21 +909,26 @@ static int test_write_efbig(void)
 err:
 	if (fd != -1)
 		close(fd);
-	unlink(".efbig");
 	return 1;
 }
 
 int main(int argc, char *argv[])
 {
 	int i, ret, nr;
+	char buf[256];
 	char *fname;
 
 	if (argc > 1) {
 		fname = argv[1];
 	} else {
-		fname = ".basic-rw";
+		srand((unsigned)time(NULL));
+		snprintf(buf, sizeof(buf), ".basic-rw-%u-%u",
+			(unsigned)rand(), (unsigned)getpid());
+		fname = buf;
 		t_create_file(fname, FILE_SIZE);
 	}
+
+	signal(SIGXFSZ, SIG_IGN);
 
 	vecs = t_create_buffers(BUFFERS, BS);
 
@@ -800,6 +975,12 @@ int main(int argc, char *argv[])
 		goto err;
 	}
 
+	ret = test_buf_select_pipe();
+	if (ret) {
+		fprintf(stderr, "test_buf_select_pipe failed\n");
+		goto err;
+	}
+
 	ret = test_eventfd_read();
 	if (ret) {
 		fprintf(stderr, "test_eventfd_read failed\n");
@@ -807,7 +988,7 @@ int main(int argc, char *argv[])
 	}
 
 	ret = read_poll_link(fname);
-	if (ret) {
+	if (ret == T_EXIT_FAIL) {
 		fprintf(stderr, "read_poll_link failed\n");
 		goto err;
 	}
@@ -848,6 +1029,12 @@ int main(int argc, char *argv[])
 		goto err;
 	}
 
+	if(vecs != NULL) {
+		for (i = 0; i < BUFFERS; i++)
+			free(vecs[i].iov_base);
+	}
+	free(vecs);
+
 	srand((unsigned)time(NULL));
 	if (create_nonaligned_buffers()) {
 		fprintf(stderr, "file creation failed\n");
@@ -873,6 +1060,12 @@ int main(int argc, char *argv[])
 				write, buffered, sqthread, fixed, nonvec);
 			goto err;
 		}
+	}
+
+	ret = test_rem_buf_single(BUFFERS + 1);
+	if (ret) {
+		fprintf(stderr, "test_rem_buf_single(BUFFERS + 1) failed\n");
+		goto err;
 	}
 
 	if (fname != argv[1])

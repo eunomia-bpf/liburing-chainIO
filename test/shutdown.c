@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <assert.h>
 
 #include <errno.h>
@@ -15,8 +16,10 @@
 #include <sys/un.h>
 #include <netinet/tcp.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "liburing.h"
+#include "helpers.h"
 
 static void sig_pipe(int sig)
 {
@@ -27,7 +30,7 @@ int main(int argc, char *argv[])
 	int p_fd[2], ret;
 	int32_t recv_s0;
 	int32_t val = 1;
-	struct sockaddr_in addr;
+	struct sockaddr_in addr = { };
 
 	if (argc > 1)
 		return 0;
@@ -42,11 +45,10 @@ int main(int argc, char *argv[])
 	assert(ret != -1);
 
 	addr.sin_family = AF_INET;
-	addr.sin_port = (rand() % 61440) + 4096;
-	addr.sin_addr.s_addr = 0x0100007fU;
+	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-	ret = bind(recv_s0, (struct sockaddr*)&addr, sizeof(addr));
-	assert(ret != -1);
+	ret = t_bind_ephemeral_port(recv_s0, &addr);
+	assert(!ret);
 	ret = listen(recv_s0, 128);
 	assert(ret != -1);
 
